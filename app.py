@@ -218,36 +218,6 @@ def get_statistics():
         if conn:
             conn.close()
 
-@app.route('/upload', methods=['POST'])
-def upload_file():
-    # ... (Giữ nguyên logic xử lý file và gọi process_and_store_questions)
-    # Lưu ý: logic này dựa vào file xuli.py và có thể cần sửa đổi bên trong xuli.py
-    # để xử lý kết nối PostgreSQL
-    if 'question_file' not in request.files:
-        return jsonify({"message": "No file part"}), 400
-
-    file = request.files['question_file']
-    if file.filename == '':
-        return jsonify({"message": "No selected file"}), 400
-
-    format_type = request.form.get('format_type')
-    grade = request.form.get('grade')
-    lesson_number = request.form.get('lesson_number')
-
-    if file and file.filename.endswith('.docx') and format_type and grade and lesson_number:
-        # Giả định thư mục 'uploads' tồn tại và có thể ghi được
-        file_path = os.path.join('uploads', file.filename) 
-        file.save(file_path)
-        
-        # Tách câu hỏi từ tệp và lưu vào CSDL dựa trên định dạng đã chọn
-        # HÀM NÀY CẦN ĐƯỢC CẬP NHẬT TRONG FILE xuli.py ĐỂ DÙNG psycopg2
-        process_and_store_questions(file_path, format_type, grade, lesson_number)
-        return jsonify({"message": "File uploaded successfully!"}), 200
-
-    return jsonify({"message": "Invalid file type or missing format type"}), 400
-
-# ---------------- Khác ----------------
-
 @app.after_request
 def add_header(response):
     response.cache_control.no_store = True
