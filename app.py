@@ -6,7 +6,7 @@ from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 import psycopg2
-from psycopg2 import pool
+from psycopg2 import pool, extras
 from dotenv import load_dotenv
 from datetime import datetime
 
