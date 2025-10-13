@@ -10,94 +10,117 @@ from psycopg2 import pool, extras
 from dotenv import load_dotenv
 from datetime import datetime
 
-# Load environment variables
+# ---------------- Load Environment ----------------
 load_dotenv()
 
 app = Flask(__name__)
-# Restrict CORS to specific frontend domain (update with your domain)
 CORS(app, resources={r"/api/*": {"origins": os.getenv("FRONTEND_URL", "*")}})
-# Rate limiting to prevent abuse
-limiter = Limiter(app=app, key_func=get_remote_address, default_limits=["200 per day", "50 per hour"])
 
-# Database connection pool (min 1, max 10 connections)
-try:
-    db_pool = psycopg2.pool.SimpleConnectionPool(
-        minconn=1,
-        maxconn=10,
-        database=urllib.parse.urlparse(os.getenv("DATABASE_URL")).path[1:],
-        user=urllib.parse.urlparse(os.getenv("DATABASE_URL")).username,
-        password=urllib.parse.urlparse(os.getenv("DATABASE_URL")).password,
-        host=urllib.parse.urlparse(os.getenv("DATABASE_URL")).hostname,
-        port=urllib.parse.urlparse(os.getenv("DATABASE_URL")).port,
-        sslmode="require"
-    )
-except psycopg2.Error as e:
-    print(f"Failed to create DB pool: {e}")
-    raise SystemExit("Database pool initialization failed")
+limiter = Limiter(
+    app=app,
+    key_func=get_remote_address,
+    default_limits=["200 per day", "50 per hour"],
+)
 
-# Get DB connection from pool
+# ---------------- Database Connection ----------------
+def create_connection_pool():
+    try:
+        db_url = os.getenv("DATABASE_URL")
+
+        # Nếu Render cung cấp DATABASE_URL dạng full URI (postgres://...)
+        if db_url:
+            result = urllib.parse.urlparse(db_url)
+            return psycopg2.pool.SimpleConnectionPool(
+                minconn=1,
+                maxconn=10,
+                database=result.path[1:],
+                user=result.username,
+                password=result.password,
+                host=result.hostname,
+                port=result.port,
+                sslmode="require"
+            )
+        else:
+            # Dành cho local test hoặc môi trường thủ công
+            return psycopg2.pool.SimpleConnectionPool(
+                minconn=1,
+                maxconn=10,
+                database=os.getenv("PG_DATABASE"),
+                user=os.getenv("PG_USER"),
+                password=os.getenv("PG_PASSWORD"),
+                host=os.getenv("PG_HOST"),
+                port=os.getenv("PG_PORT", 5432),
+                sslmode=os.getenv("PG_SSLMODE", "require")
+            )
+    except Exception as e:
+        print(f"❌ Failed to create DB pool: {e}")
+        raise SystemExit("Database pool initialization failed")
+
+db_pool = create_connection_pool()
+
 def get_db_connection():
     try:
-        conn = db_pool.getconn()
-        return conn
+        return db_pool.getconn()
     except psycopg2.Error as e:
-        print(f"DB connection error: {e}")
+        print(f"⚠️ DB connection error: {e}")
         return None
 
-# Release DB connection back to pool
 def release_db_connection(conn):
     if conn:
         db_pool.putconn(conn)
 
-# 1. Get list of questions
+# ---------------- API ROUTES ----------------
+
+# Health check (Render gọi để kiểm tra container)
+@app.route("/")
+def health():
+    return jsonify({"status": "ok"}), 200
+
+# 1️⃣ Get questions
 @app.route("/api/questions", methods=["GET"])
-@limiter.limit("100/hour")  # Limit requests to prevent scraping
+@limiter.limit("100/hour")
 def get_questions():
     conn = get_db_connection()
     if not conn:
         return jsonify({"error": "Database unavailable"}), 500
-    
+
     try:
-        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        cursor.execute("SELECT id, question, option_a, option_b, option_c, option_d, image FROM questions")
-        questions = cursor.fetchall()
-        cursor.close()
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
+            cursor.execute("SELECT id, question, option_a, option_b, option_c, option_d, image FROM questions")
+            questions = cursor.fetchall()
         return jsonify(questions)
-    except psycopg2.Error as e:
-        print(f"Query error: {e}")
+    except Exception as e:
+        print(f"❌ Query error: {e}")
         return jsonify({"error": "Failed to fetch questions"}), 500
     finally:
         release_db_connection(conn)
 
-# 2. Submit quiz results
+# 2️⃣ Submit answers
 @app.route("/api/submit", methods=["POST"])
-@limiter.limit("10/hour")  # Limit submissions to prevent spam
+@limiter.limit("10/hour")
 def submit_answers():
     data = request.get_json(silent=True)
     if not data:
         abort(400, "Invalid JSON payload")
 
-    # Validate input
     required_fields = ["username", "score", "answers"]
     if not all(k in data for k in required_fields):
         abort(400, "Missing required fields")
-    
+
     username = data["username"]
     score = data["score"]
     answers = data["answers"]
-    
-    # Validate types and constraints
-    if not isinstance(username, str) or len(username) < 3 or len(username) > 50:
-        abort(400, "Username must be string between 3-50 characters")
+
+    if not isinstance(username, str) or not (3 <= len(username) <= 50):
+        abort(400, "Username must be string between 3–50 characters")
     if not isinstance(score, int) or score < 0:
         abort(400, "Score must be a non-negative integer")
     if not isinstance(answers, list):
         abort(400, "Answers must be a list")
 
-    # Serialize answers to JSON
     try:
         details = json.dumps(answers)
-    except (TypeError, ValueError):
+    except Exception:
         abort(400, "Invalid answers format")
 
     conn = get_db_connection()
@@ -105,50 +128,51 @@ def submit_answers():
         return jsonify({"error": "Database unavailable"}), 500
 
     try:
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT INTO results (username, score, answers, created_at) VALUES (%s, %s, %s, %s)",
-            (username, score, details, datetime.utcnow())
-        )
-        conn.commit()
-        cursor.close()
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO results (username, score, answers, created_at) VALUES (%s, %s, %s, %s)",
+                (username, score, details, datetime.utcnow())
+            )
+            conn.commit()
         return jsonify({"message": "Results saved successfully!"}), 201
-    except psycopg2.Error as e:
-        print(f"Insert error: {e}")
+    except Exception as e:
+        print(f"❌ Insert error: {e}")
         conn.rollback()
         return jsonify({"error": "Failed to save results"}), 500
     finally:
         release_db_connection(conn)
 
-# 3. Get leaderboard
+# 3️⃣ Get leaderboard
 @app.route("/api/results", methods=["GET"])
-@limiter.limit("50/hour")  # Limit leaderboard requests
+@limiter.limit("50/hour")
 def get_results():
     conn = get_db_connection()
     if not conn:
         return jsonify({"error": "Database unavailable"}), 500
 
     try:
-        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        cursor.execute("SELECT id, username, score, created_at FROM results ORDER BY score DESC, created_at DESC LIMIT 50")
-        results = cursor.fetchall()
-        cursor.close()
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
+            cursor.execute("""
+                SELECT id, username, score, created_at
+                FROM results
+                ORDER BY score DESC, created_at DESC
+                LIMIT 50
+            """)
+            results = cursor.fetchall()
         return jsonify(results)
-    except psycopg2.Error as e:
-        print(f"Query error: {e}")
+    except Exception as e:
+        print(f"❌ Query error: {e}")
         return jsonify({"error": "Failed to fetch results"}), 500
     finally:
         release_db_connection(conn)
 
-# Error handler for 400 Bad Request
+# ---------------- Error Handling ----------------
 @app.errorhandler(400)
 def bad_request(error):
     return jsonify({"error": str(error.description)}), 400
 
-# Main entry point
+# ---------------- Main Entry ----------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    if os.environ.get("RENDER"):
-        print("Running in production mode...")
-    else:
-        app.run(host="0.0.0.0", port=port, debug=True)
+    print(f"✅ Flask app running on port {port}")
+    app.run(host="0.0.0.0", port=port, debug=not os.getenv("RENDER"))
