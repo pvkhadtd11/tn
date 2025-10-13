@@ -40,8 +40,6 @@ def get_questions():
         bai_start = request.args.get('baiStart')
         bai_end = request.args.get('baiEnd')
 
-        # ĐÃ SỬA: Thay 'correct_answer' thành 'correct_option'
-        # ĐÃ SỬA: Chuẩn hóa tên các cột option_i (optionA_i, optionB_i,...)
         query = """
             SELECT 
                 id, question, option_a, option_b, option_c, option_d, 
@@ -50,19 +48,34 @@ def get_questions():
             FROM questions
         """
         query_params = []
-        
-        if khoi and bai_start and bai_end:
-            query += " WHERE khoi = %s AND bai BETWEEN %s AND %s"
-            query_params = [khoi, bai_start, bai_end]
+        conditions = []
+
+        # Lọc theo khối nếu có
+        if khoi:
+            conditions.append("khoi = %s")
+            query_params.append(khoi)
+
+        # Lọc theo bài nếu có
+        if bai_start and bai_end:
+            if bai_start == bai_end:
+                conditions.append("bai = %s")
+                query_params.append(bai_start)
+            else:
+                conditions.append("bai >= %s AND bai <= %s")
+                query_params.extend([bai_start, bai_end])
+
+        # Ghép điều kiện nếu có
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
 
         conn = get_db_connection()
-        cursor = conn.cursor(cursor_factory=extras.RealDictCursor) 
+        cursor = conn.cursor(cursor_factory=extras.RealDictCursor)
         cursor.execute(query, query_params)
         questions = cursor.fetchall()
         cursor.close()
-        
+
         return jsonify(questions)
-        
+
     except psycopg2.Error as err:
         return jsonify({"error": str(err)}), 500
     except ConnectionError as e:
