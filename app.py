@@ -60,14 +60,19 @@ def get_questions():
             try:
                 bai_start_int = int(bai_start)
                 bai_end_int = int(bai_end)
+
                 if bai_start_int == bai_end_int:
-                    conditions.append("CAST(bai AS INTEGER) = %s")
+                    conditions.append(
+                        "( (bai ~ '^[0-9]+$' AND CAST(bai AS INTEGER) = %s) OR bai IN ('gki','cki','gkii','ckii') )"
+                    )
                     query_params.append(bai_start_int)
                 else:
-                    conditions.append("CAST(bai AS INTEGER) BETWEEN %s AND %s")
+                    conditions.append(
+                        "( (bai ~ '^[0-9]+$' AND CAST(bai AS INTEGER) BETWEEN %s AND %s) OR bai IN ('gki','cki','gkii','ckii') )"
+                    )
                     query_params.extend([bai_start_int, bai_end_int])
             except (ValueError, TypeError):
-                # Nếu không ép kiểu được thì so sánh chuỗi
+                # Nếu không ép kiểu được thì fallback so sánh chuỗi
                 if bai_start == bai_end:
                     conditions.append("bai = %s")
                     query_params.append(bai_start)
@@ -226,8 +231,6 @@ def get_statistics():
     finally:
         if conn:
             conn.close()
-
-# Giữ nguyên /upload và after_request
 
 @app.after_request
 def add_header(response):
