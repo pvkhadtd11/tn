@@ -57,12 +57,23 @@ def get_questions():
 
         # Lọc theo bài nếu có
         if bai_start and bai_end:
-            if bai_start == bai_end:
-                conditions.append("bai = %s")
-                query_params.append(bai_start)
-            else:
-                conditions.append("bai >= %s AND bai <= %s")
-                query_params.extend([bai_start, bai_end])
+            try:
+                bai_start_int = int(bai_start)
+                bai_end_int = int(bai_end)
+                if bai_start_int == bai_end_int:
+                    conditions.append("CAST(bai AS INTEGER) = %s")
+                    query_params.append(bai_start_int)
+                else:
+                    conditions.append("CAST(bai AS INTEGER) BETWEEN %s AND %s")
+                    query_params.extend([bai_start_int, bai_end_int])
+            except (ValueError, TypeError):
+                # Nếu không ép kiểu được thì so sánh chuỗi
+                if bai_start == bai_end:
+                    conditions.append("bai = %s")
+                    query_params.append(bai_start)
+                else:
+                    conditions.append("bai >= %s AND bai <= %s")
+                    query_params.extend([bai_start, bai_end])
 
         # Ghép điều kiện nếu có
         if conditions:
