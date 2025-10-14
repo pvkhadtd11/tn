@@ -1,15 +1,12 @@
 import os
 import urllib.parse
-from flask import Flask, jsonify, request, send_file
+from flask import Flask, jsonify, request
 from flask_cors import CORS
 import psycopg2
 from psycopg2 import extras
-# from xuli import process_and_store_questions 
-import openpyxl 
 
 app = Flask(__name__)
-FRONTEND_URL = os.getenv("FRONTEND_URL", "*") 
-CORS(app, resources={r"/*": {"origins": FRONTEND_URL}}) 
+CORS(app, supports_credentials=True, origins=["https://playgame.id.vn"])
 
 # ---------------- PostgreSQL Connection ----------------
 
@@ -37,8 +34,8 @@ def get_questions():
     conn = None
     try:
         khoi = request.args.get('khoi')
-        bai_start = request.args.get('baiStart')
-        bai_end = request.args.get('baiEnd')
+        bai_start = request.args.get('baiStart', type=int)
+        bai_end = request.args.get('baiEnd', type=int)
 
         query = """
             SELECT 
@@ -50,37 +47,18 @@ def get_questions():
         query_params = []
         conditions = []
 
-        # Lọc theo khối nếu có
         if khoi:
             conditions.append("khoi = %s")
             query_params.append(khoi)
 
-        # Lọc theo bài nếu có
-        if bai_start and bai_end:
-            try:
-                bai_start_int = int(bai_start)
-                bai_end_int = int(bai_end)
+        if bai_start is not None and bai_end is not None:
+            if bai_start == bai_end:
+                conditions.append("bai = %s")
+                query_params.append(bai_start)
+            else:
+                conditions.append("bai BETWEEN %s AND %s")
+                query_params.extend([bai_start, bai_end])
 
-                if bai_start_int == bai_end_int:
-                    conditions.append(
-                        "( (bai ~ '^[0-9]+$' AND CAST(bai AS INTEGER) = %s) OR bai IN ('gki','cki','gkii','ckii') )"
-                    )
-                    query_params.append(bai_start_int)
-                else:
-                    conditions.append(
-                        "( (bai ~ '^[0-9]+$' AND CAST(bai AS INTEGER) BETWEEN %s AND %s) OR bai IN ('gki','cki','gkii','ckii') )"
-                    )
-                    query_params.extend([bai_start_int, bai_end_int])
-            except (ValueError, TypeError):
-                # Nếu không ép kiểu được thì fallback so sánh chuỗi
-                if bai_start == bai_end:
-                    conditions.append("bai = %s")
-                    query_params.append(bai_start)
-                else:
-                    conditions.append("bai >= %s AND bai <= %s")
-                    query_params.extend([bai_start, bai_end])
-
-        # Ghép điều kiện nếu có
         if conditions:
             query += " WHERE " + " AND ".join(conditions)
 
@@ -94,8 +72,6 @@ def get_questions():
 
     except psycopg2.Error as err:
         return jsonify({"error": str(err)}), 500
-    except ConnectionError as e:
-        return jsonify({"error": str(e)}), 500
     finally:
         if conn:
             conn.close()
@@ -119,7 +95,6 @@ def submit_quiz():
         result = cursor.fetchone() 
         new_id = result[0] + 1 
         
-        # GIỮ NGUYÊN INSERT và logic cũ.
         cursor.execute("""
             INSERT INTO ket_qua (id, ten_hoc_sinh, lop, bai_start, bai_end, tong_so_cau_hoi, diem)
             VALUES (%s, %s, %s, %s, %s, %s, %s)
@@ -136,42 +111,6 @@ def submit_quiz():
         if conn:
             conn.close()
 
-@app.route('/download-results', methods=['GET'])
-def download_results():
-    conn = None
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        # SỬ DỤNG CỘT TỪ BẢNG KET_QUA BẠN CUNG CẤP: ten_hoc_sinh, lop, diem
-        cursor.execute("SELECT ten_hoc_sinh, lop, diem FROM ket_qua")
-        results = cursor.fetchall()
-        cursor.close()
-        
-        excel_directory = os.path.join(os.path.dirname(__file__), 'excel')
-        excel_filename = os.path.join(excel_directory, 'quiz_results.xlsx')
-
-        if not os.path.exists(excel_directory):
-            os.makedirs(excel_directory)
-
-        workbook = openpyxl.Workbook()
-        sheet = workbook.active
-        sheet.title = 'Quiz Results'
-        sheet.append(['Họ và Tên', 'Lớp', 'Điểm']) 
-        for row in results:
-            sheet.append(row)
-        workbook.save(excel_filename)
-        
-        return send_file(excel_filename, as_attachment=True, download_name='quiz_results.xlsx')
-    
-    except psycopg2.Error as err:
-        return jsonify({"error": str(err)}), 500
-    except Exception as e: 
-        return jsonify({"error": str(e)}), 500
-    finally:
-        if conn:
-            conn.close()
-
 @app.route('/history', methods=['GET'])
 def get_history():
     conn = None
@@ -180,9 +119,12 @@ def get_history():
 
     try:
         conn = get_db_connection()
-        cursor = conn.cursor()
-        # SỬ DỤNG CỘT TỪ BẢNG KET_QUA BẠN CUNG CẤP
-        cursor.execute("SELECT id, ten_hoc_sinh, lop, bai_start, bai_end, tong_so_cau_hoi, diem FROM ket_qua WHERE ten_hoc_sinh = %s AND lop = %s", (student_name, lop))
+        cursor = conn.cursor(cursor_factory=extras.RealDictCursor)
+        cursor.execute("""
+            SELECT id, ten_hoc_sinh, lop, bai_start, bai_end, tong_so_cau_hoi, diem 
+            FROM ket_qua 
+            WHERE ten_hoc_sinh = %s AND lop = %s
+        """, (student_name, lop))
         results = cursor.fetchall()
         cursor.close()
         
@@ -203,7 +145,6 @@ def get_statistics():
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=extras.RealDictCursor) 
         
-        # SỬ DỤNG CỘT TỪ BẢNG KET_QUA BẠN CUNG CẤP
         cursor.execute("""
             SELECT lop, bai_start, COUNT(*) as so_hoc_sinh
             FROM ket_qua
@@ -212,7 +153,6 @@ def get_statistics():
         """, (lop, bai))
         students_per_class_and_bai = cursor.fetchall()
 
-        # Lấy chi tiết điểm của các học sinh
         cursor.execute("""
             SELECT ten_hoc_sinh, diem, tong_so_cau_hoi
             FROM ket_qua
