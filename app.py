@@ -172,6 +172,11 @@ def get_statistics():
         if conn:
             conn.close()
 
+@app.route('/')
+@app.route('/ping')
+def health_check():
+    return jsonify({"status": "ok"}), 200
+    
 @app.after_request
 def add_header(response):
     response.cache_control.no_store = True
