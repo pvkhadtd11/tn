@@ -14,7 +14,7 @@ def get_db_connection():
     db_url = os.getenv("DATABASE_URL")
     if not db_url:
         raise ConnectionError("DATABASE_URL environment variable is not set.")
-    conn = psycopg2.connect(db_url, sslmode="require")
+    conn = psycopg2.connect(db_url)
     return conn
 
 # ---------------- API ROUTES ----------------
