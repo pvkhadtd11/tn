@@ -166,6 +166,23 @@ def get_statistics():
 @app.route('/ping')
 def health_check():
     return jsonify({"status": "ok"}), 200
+
+@app.route("/health")
+def health():
+    try:
+        with db.cursor() as cur:
+            cur.execute("SELECT 1")
+            cur.fetchone()
+        return {
+            "status": "ok",
+            "db": "connected"
+        }, 200
+    except Exception as e:
+        return {
+            "status": "error",
+            "db": "down"
+        }, 500
+
     
 @app.after_request
 def add_header(response):
