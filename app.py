@@ -169,10 +169,13 @@ def health_check():
 
 @app.route("/health")
 def health():
+    conn = None
     try:
-        with db.cursor() as cur:
-            cur.execute("SELECT 1")
-            cur.fetchone()
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT 1")
+        cur.fetchone()
+        cur.close()
         return {
             "status": "ok",
             "db": "connected"
@@ -180,10 +183,13 @@ def health():
     except Exception as e:
         return {
             "status": "error",
-            "db": "down"
+            "db": "down",
+            "message": str(e)
         }, 500
+    finally:
+        if conn:
+            conn.close()
 
-    
 @app.after_request
 def add_header(response):
     response.cache_control.no_store = True
