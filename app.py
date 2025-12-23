@@ -9,7 +9,8 @@ app = Flask(__name__)
 origins = [
     "https://playgame.id.vn",
     "https://phamkha.io.vn",
-    "https://www.phamkha.io.vn"
+    "https://www.phamkha.io.vn",
+    "http://localhost:5000"
 ]
 
 CORS(app, supports_credentials=True, origins=origins)
