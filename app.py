@@ -6,7 +6,13 @@ import psycopg2
 from psycopg2 import extras
 
 app = Flask(__name__)
-CORS(app, supports_credentials=True, origins=["https://playgame.id.vn"])
+origins = [
+    "https://playgame.id.vn",
+    "https://phamkha.io.vn",
+    "https://www.phamkha.io.vn"
+]
+
+CORS(app, supports_credentials=True, origins=origins)
 
 # ---------------- PostgreSQL Connection ----------------
 
