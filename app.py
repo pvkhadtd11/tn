@@ -341,6 +341,75 @@ def add_header(response):
     response.expires = 0
     return response
 
+# ========== API CHẤM ĐIỂM MỚI (AN TOÀN, KHÔNG LỘ ĐÁP ÁN) ==========
+@app.route('/api/submit-quiz', methods=['POST'])
+def submit_quiz_safe():
+    conn = None
+    try:
+        data = request.get_json()
+        ten_hoc_sinh = data.get('ten_hoc_sinh')
+        lop = data.get('lop')
+        bai_start = data.get('bai_start')
+        bai_end = data.get('bai_end')
+        subject = data.get('subject')
+        exam_id = data.get('exam_id')
+        user_answers = data.get('answers') # Format: {question_id: selected_option, ...}
+
+        if not ten_hoc_sinh or not lop or not user_answers:
+            return jsonify({'error': 'Thiếu thông tin'}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=extras.RealDictCursor)
+
+        # Lấy tất cả đáp án đúng cho các câu hỏi mà học sinh đã trả lời
+        question_ids = list(user_answers.keys())
+        # Tạo câu lệnh SQL an toàn với placeholders
+        placeholders = ','.join(['%s'] * len(question_ids))
+        cursor.execute(f"""
+            SELECT id, correct_option
+            FROM questions
+            WHERE id IN ({placeholders})
+        """, question_ids)
+        correct_answers = {row['id']: row['correct_option'] for row in cursor.fetchall()}
+
+        # Chấm điểm
+        score = 0
+        for q_id, user_ans in user_answers.items():
+            if q_id in correct_answers:
+                # So sánh câu trả lời của học sinh với đáp án đúng từ DB
+                if str(user_ans) == str(correct_answers[q_id]):
+                    score += 1
+
+        total_questions = len(user_answers)
+        
+        # Lưu kết quả vào bảng ket_qua (dùng chung bảng với API cũ)
+        cur = conn.cursor()
+        # Lấy ID mới
+        cur.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM ket_qua")
+        new_id = cur.fetchone()[0]
+        
+        cur.execute("""
+            INSERT INTO ket_qua (id, ten_hoc_sinh, lop, bai_start, bai_end, tong_so_cau_hoi, diem, subject, exam_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """, (new_id, ten_hoc_sinh, lop, bai_start, bai_end, total_questions, score, subject, exam_id))
+        conn.commit()
+        cur.close()
+
+        return jsonify({
+            'message': 'Success',
+            'score': score,
+            'total': total_questions
+        }), 201
+
+    except Exception as e:
+        print(f"❌ Lỗi khi chấm điểm: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+            
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
