@@ -96,6 +96,11 @@ def get_questions():
         if conn:
             conn.close()
 
+@app.route('/api/questions', methods=['GET'])
+def get_questions_api():
+    """Alias cho /questions để tương thích với frontend mới"""
+    return get_questions()
+
 # ========== API CHO TAB 3 (ĐỀ THI) ==========
 @app.route('/api/exams', methods=['GET'])
 def get_exams():
