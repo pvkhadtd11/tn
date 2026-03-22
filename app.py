@@ -42,7 +42,7 @@ def get_questions():
         query = """
             SELECT id, type, question, 
                    option_a, option_b, option_c, option_d, 
-                   khoi, bai, subject
+                   correct_option, khoi, bai, subject
             FROM questions
             WHERE exam_id IS NULL
         """
@@ -79,6 +79,12 @@ def get_questions():
         cursor.execute(query, query_params)
         questions = cursor.fetchall()
         cursor.close()
+        
+        # Xử lý correct_option cho TF (chuyển chuỗi 'A,B,C' thành mảng)
+        for q in questions:
+            if q['type'] == 'tf' and isinstance(q['correct_option'], str):
+                if ',' in q['correct_option']:
+                    q['correct_option'] = q['correct_option'].split(',')
         
         return jsonify(questions)
     
@@ -138,7 +144,7 @@ def get_exam_questions():
         query = """
             SELECT id, type, question, 
                    option_a, option_b, option_c, option_d, 
-                   khoi, subject, exam_id
+                   correct_option, khoi, subject, exam_id
             FROM questions
             WHERE exam_id = %s AND khoi = %s AND subject = %s
             ORDER BY id
@@ -158,6 +164,12 @@ def get_exam_questions():
         # Ghép lại: MCQ trước, TF sau
         final_questions = mcq_questions + tf_questions
         
+        # Xử lý correct_option cho TF
+        for q in final_questions:
+            if q['type'] == 'tf' and isinstance(q['correct_option'], str):
+                if ',' in q['correct_option']:
+                    q['correct_option'] = q['correct_option'].split(',')
+        
         return jsonify(final_questions)
     
     except psycopg2.Error as err:
@@ -166,63 +178,45 @@ def get_exam_questions():
         if conn:
             conn.close()
 
-@app.route('/api/submit-quiz', methods=['POST'])
+# ========== API NỘP BÀI ==========
+@app.route('/submit', methods=['POST'])
 def submit_quiz():
     conn = None
+    data = request.json
+    ten_hoc_sinh = data.get('ten_hoc_sinh')
+    lop = data.get('lop')
+    bai_start = data.get('bai_start')
+    bai_end = data.get('bai_end')
+    tong_so_cau_hoi = data.get('tong_so_cau_hoi')
+    diem = data.get('diem')
+    subject = data.get('subject')
+    exam_id = data.get('exam_id')
+    
+    print(f"📝 Nhận dữ liệu: {data}")
+
     try:
-        data = request.get_json()
-        ten_hoc_sinh = data.get('ten_hoc_sinh')
-        lop = data.get('lop')
-        bai_start = data.get('bai_start')
-        bai_end = data.get('bai_end')
-        subject = data.get('subject')
-        exam_id = data.get('exam_id')
-        user_answers = data.get('answers') # Dictionary: {question_id: selected_option, ...}
-
-        if not ten_hoc_sinh or not lop or not user_answers:
-            return jsonify({'error': 'Thiếu thông tin'}), 400
-
         conn = get_db_connection()
-        cursor = conn.cursor(cursor_factory=extras.RealDictCursor)
-
-        # Lấy tất cả đáp án đúng cho các câu hỏi mà học sinh đã trả lời
-        question_ids = list(user_answers.keys())
-        placeholders = ','.join(['%s'] * len(question_ids))
-        cursor.execute(f"""
-            SELECT id, correct_option
-            FROM questions
-            WHERE id IN ({placeholders})
-        """, question_ids)
-        correct_answers = {row['id']: row['correct_option'] for row in cursor.fetchall()}
-
-        # Chấm điểm
-        score = 0
-        for q_id, user_ans in user_answers.items():
-            if q_id in correct_answers:
-                if user_ans == correct_answers[q_id]:
-                    score += 1
-
-        total_questions = len(user_answers)
-        # Lưu kết quả vào bảng ket_qua
-        cur = conn.cursor()
-        cur.execute("""
-            INSERT INTO ket_qua (ten_hoc_sinh, lop, bai_start, bai_end, tong_so_cau_hoi, diem, subject, exam_id)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-        """, (ten_hoc_sinh, lop, bai_start, bai_end, total_questions, score, subject, exam_id))
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT COUNT(*) FROM ket_qua")
+        result = cursor.fetchone() 
+        new_id = result[0] + 1 
+        
+        # Thêm subject và exam_id nếu có
+        cursor.execute("""
+            INSERT INTO ket_qua (id, ten_hoc_sinh, lop, bai_start, bai_end, tong_so_cau_hoi, diem, subject, exam_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """, (new_id, ten_hoc_sinh, lop, bai_start, bai_end, tong_so_cau_hoi, diem, subject, exam_id))
         conn.commit()
-        cur.close()
-
-        return jsonify({
-            'message': 'Success',
-            'score': score,
-            'total': total_questions
-        }), 201
-
-    except Exception as e:
-        print(f"❌ Lỗi khi chấm điểm: {e}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
+        cursor.close()
+        
+        print(f"✅ Đã lưu kết quả: {ten_hoc_sinh} - {diem}/{tong_so_cau_hoi}")
+        return jsonify({"message": "Success"}), 201
+    except psycopg2.Error as err:
+        if conn:
+            conn.rollback() 
+        print(f"❌ Lỗi: {err}")
+        return jsonify({"error": str(err)}), 500
     finally:
         if conn:
             conn.close()
@@ -346,6 +340,7 @@ def add_header(response):
     response.pragma = 'no-cache'
     response.expires = 0
     return response
+
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
-    app.run(host='0.0.0.0', port=port, debug=False)
+    app.run(host='0.0.0.0', port=port)
