@@ -1,21 +1,23 @@
 import os
-import urllib.parse
+import random
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 import psycopg2
 from psycopg2 import extras
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 app = Flask(__name__)
+
 origins = [
     "https://playgame.id.vn",
     "https://phamkha.io.vn",
     "https://www.phamkha.io.vn",
     "http://localhost:5000"
 ]
-
 CORS(app, supports_credentials=True, origins=origins)
-
-# ---------------- PostgreSQL Connection ----------------
 
 def get_db_connection():
     db_url = os.getenv("DATABASE_URL")
@@ -24,22 +26,27 @@ def get_db_connection():
     conn = psycopg2.connect(db_url, sslmode="require")
     return conn
 
-# ---------------- API ROUTES ----------------
-
+# ========== API CHO TAB 1 & 2 (HỌC THEO BÀI) ==========
 @app.route('/questions', methods=['GET'])
 def get_questions():
+    """Lấy câu hỏi học tập theo bài (MCQ hoặc TF) - GIỮ NGUYÊN FORMAT CODE CŨ"""
     conn = None
     try:
         khoi = request.args.get('khoi')
         bai_start = request.args.get('baiStart', type=int)
         bai_end = request.args.get('baiEnd', type=int)
-
+        
+        # Thêm các tham số mới cho filter
+        question_type = request.args.get('type')
+        subject = request.args.get('subject')
+        
         query = """
-            SELECT 
-                id, question, option_a, option_b, option_c, option_d, 
-                correct_option, image_path, khoi, bai, 
-                "optionA_i", "optionB_i", "optionC_i", "optionD_i" 
+            SELECT id, type, question, 
+                   option_a, option_b, option_c, option_d, 
+                   correct_option, khoi, bai, subject,
+                   image_path, "optionA_i", "optionB_i", "optionC_i", "optionD_i"
             FROM questions
+            WHERE exam_id IS NULL
         """
         query_params = []
         conditions = []
@@ -55,16 +62,32 @@ def get_questions():
             else:
                 conditions.append("bai BETWEEN %s AND %s")
                 query_params.extend([bai_start, bai_end])
+        
+        if question_type:
+            conditions.append("type = %s")
+            query_params.append(question_type)
+        
+        if subject:
+            conditions.append("subject = %s")
+            query_params.append(subject)
 
         if conditions:
-            query += " WHERE " + " AND ".join(conditions)
+            query += " AND " + " AND ".join(conditions)
 
+        query += " ORDER BY bai, id"
+        
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=extras.RealDictCursor)
         cursor.execute(query, query_params)
         questions = cursor.fetchall()
         cursor.close()
-
+        
+        # Xử lý correct_option cho TF (chuyển chuỗi 'A,B,C' thành mảng)
+        for q in questions:
+            if q['type'] == 'tf' and isinstance(q['correct_option'], str):
+                if ',' in q['correct_option']:
+                    q['correct_option'] = q['correct_option'].split(',')
+        
         return jsonify(questions)
 
     except psycopg2.Error as err:
@@ -73,6 +96,91 @@ def get_questions():
         if conn:
             conn.close()
 
+# ========== API CHO TAB 3 (ĐỀ THI) ==========
+@app.route('/api/exams', methods=['GET'])
+def get_exams():
+    """Lấy danh sách các đề thi có sẵn"""
+    conn = None
+    try:
+        khoi = request.args.get('khoi', type=int)
+        subject = request.args.get('subject')
+        
+        query = """
+            SELECT DISTINCT exam_id 
+            FROM questions 
+            WHERE exam_id IS NOT NULL 
+              AND khoi = %s 
+              AND subject = %s
+            ORDER BY exam_id
+        """
+        
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=extras.RealDictCursor)
+        cursor.execute(query, (khoi, subject))
+        exams = cursor.fetchall()
+        cursor.close()
+        
+        return jsonify(exams)
+    
+    except psycopg2.Error as err:
+        return jsonify({"error": str(err)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+@app.route('/api/exam-questions', methods=['GET'])
+def get_exam_questions():
+    """Lấy câu hỏi cho đề thi"""
+    conn = None
+    try:
+        exam_id = request.args.get('exam_id', type=int)
+        khoi = request.args.get('khoi', type=int)
+        subject = request.args.get('subject')
+        
+        if not exam_id:
+            return jsonify({"error": "exam_id is required"}), 400
+        
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=extras.RealDictCursor)
+        
+        query = """
+            SELECT id, type, question, 
+                   option_a, option_b, option_c, option_d, 
+                   correct_option, khoi, subject, exam_id
+            FROM questions
+            WHERE exam_id = %s AND khoi = %s AND subject = %s
+            ORDER BY id
+        """
+        cursor.execute(query, (exam_id, khoi, subject))
+        all_questions = cursor.fetchall()
+        cursor.close()
+        
+        # Tách MCQ và TF
+        mcq_questions = [q for q in all_questions if q['type'] == 'mcq']
+        tf_questions = [q for q in all_questions if q['type'] == 'tf']
+        
+        # Xáo trộn thứ tự câu hỏi
+        random.shuffle(mcq_questions)
+        random.shuffle(tf_questions)
+        
+        # Ghép lại: MCQ trước, TF sau
+        final_questions = mcq_questions + tf_questions
+        
+        # Xử lý correct_option cho TF
+        for q in final_questions:
+            if q['type'] == 'tf' and isinstance(q['correct_option'], str):
+                if ',' in q['correct_option']:
+                    q['correct_option'] = q['correct_option'].split(',')
+        
+        return jsonify(final_questions)
+    
+    except psycopg2.Error as err:
+        return jsonify({"error": str(err)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+# ========== API NỘP BÀI ==========
 @app.route('/submit', methods=['POST'])
 def submit_quiz():
     conn = None
@@ -83,6 +191,10 @@ def submit_quiz():
     bai_end = data.get('bai_end')
     tong_so_cau_hoi = data.get('tong_so_cau_hoi')
     diem = data.get('diem')
+    subject = data.get('subject')
+    exam_id = data.get('exam_id')
+    
+    print(f"📝 Nhận dữ liệu: {data}")
 
     try:
         conn = get_db_connection()
@@ -92,22 +204,26 @@ def submit_quiz():
         result = cursor.fetchone() 
         new_id = result[0] + 1 
         
+        # Thêm subject và exam_id nếu có
         cursor.execute("""
-            INSERT INTO ket_qua (id, ten_hoc_sinh, lop, bai_start, bai_end, tong_so_cau_hoi, diem)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-        """, (new_id, ten_hoc_sinh, lop, bai_start, bai_end, tong_so_cau_hoi, diem))
+            INSERT INTO ket_qua (id, ten_hoc_sinh, lop, bai_start, bai_end, tong_so_cau_hoi, diem, subject, exam_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """, (new_id, ten_hoc_sinh, lop, bai_start, bai_end, tong_so_cau_hoi, diem, subject, exam_id))
         conn.commit()
         cursor.close()
         
+        print(f"✅ Đã lưu kết quả: {ten_hoc_sinh} - {diem}/{tong_so_cau_hoi}")
         return jsonify({"message": "Success"}), 201
     except psycopg2.Error as err:
         if conn:
             conn.rollback() 
+        print(f"❌ Lỗi: {err}")
         return jsonify({"error": str(err)}), 500
     finally:
         if conn:
             conn.close()
 
+# ========== API LỊCH SỬ ==========
 @app.route('/history', methods=['GET'])
 def get_history():
     conn = None
@@ -118,12 +234,19 @@ def get_history():
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=extras.RealDictCursor)
         cursor.execute("""
-            SELECT id, ten_hoc_sinh, lop, bai_start, bai_end, tong_so_cau_hoi, diem 
+            SELECT id, ten_hoc_sinh, lop, bai_start, bai_end, 
+                   tong_so_cau_hoi, diem, subject, exam_id, created_at
             FROM ket_qua 
             WHERE ten_hoc_sinh = %s AND lop = %s
+            ORDER BY id DESC
         """, (student_name, lop))
         results = cursor.fetchall()
         cursor.close()
+        
+        # Chuyển đổi datetime thành string
+        for result in results:
+            if result.get('created_at'):
+                result['created_at'] = result['created_at'].isoformat()
         
         return jsonify(results), 200
     except psycopg2.Error as err:
@@ -132,11 +255,13 @@ def get_history():
         if conn:
             conn.close()
 
+# ========== API THỐNG KÊ ==========
 @app.route('/statistics', methods=['GET'])
 def get_statistics():
     conn = None
     lop = request.args.get('lop')
     bai = request.args.get('bai')
+    subject = request.args.get('subject')
 
     try:
         conn = get_db_connection()
@@ -145,30 +270,40 @@ def get_statistics():
         cursor.execute("""
             SELECT lop, bai_start, COUNT(*) as so_hoc_sinh
             FROM ket_qua
-            WHERE lop = %s AND bai_start = %s
+            WHERE lop = %s AND bai_start = %s AND subject = %s
             GROUP BY lop, bai_start
-        """, (lop, bai))
+        """, (lop, bai, subject))
         students_per_class_and_bai = cursor.fetchall()
 
         cursor.execute("""
-            SELECT ten_hoc_sinh, diem, tong_so_cau_hoi
+            SELECT ten_hoc_sinh, diem, tong_so_cau_hoi, created_at
             FROM ket_qua
-            WHERE lop = %s AND bai_start = %s
-        """, (lop, bai))
+            WHERE lop = %s AND bai_start = %s AND subject = %s
+            ORDER BY diem DESC, created_at DESC
+        """, (lop, bai, subject))
         student_scores = cursor.fetchall()
 
         cursor.close()
         
-        return jsonify({
+        # Tính thêm thống kê tổng hợp
+        scores = [s['diem'] for s in student_scores]
+        stats = {
             "students_per_class_and_bai": students_per_class_and_bai,
-            "student_scores": student_scores
-        }), 200
+            "student_scores": student_scores,
+            "total_students": len(student_scores),
+            "average_score": sum(scores) / len(scores) if scores else 0,
+            "highest_score": max(scores) if scores else 0,
+            "lowest_score": min(scores) if scores else 0
+        }
+        
+        return jsonify(stats), 200
     except psycopg2.Error as err:
         return jsonify({"error": str(err)}), 500
     finally:
         if conn:
             conn.close()
 
+# ========== HEALTH CHECK ==========
 @app.route('/')
 @app.route('/ping')
 def health_check():
@@ -197,6 +332,7 @@ def health():
         if conn:
             conn.close()
 
+# ========== CẤU HÌNH CACHE ==========
 @app.after_request
 def add_header(response):
     response.cache_control.no_store = True
