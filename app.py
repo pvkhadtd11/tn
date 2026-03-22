@@ -27,34 +27,40 @@ def get_db_connection():
     return conn
 
 # ========== API CHO TAB 1 & 2 (HỌC THEO BÀI) ==========
-@app.route('/questions', methods=['GET'])
+@app.route('/api/questions', methods=['GET'])
 def get_questions():
-    """Lấy câu hỏi học tập theo bài (MCQ hoặc TF) - GIỮ NGUYÊN FORMAT CODE CŨ"""
+    """Lấy câu hỏi học tập theo bài (MCQ hoặc TF)"""
     conn = None
     try:
-        khoi = request.args.get('khoi')
+        question_type = request.args.get('type')  # 'mcq' hoặc 'tf'
+        khoi = request.args.get('khoi', type=int)
         bai_start = request.args.get('baiStart', type=int)
         bai_end = request.args.get('baiEnd', type=int)
-        
-        # Thêm các tham số mới cho filter
-        question_type = request.args.get('type')
         subject = request.args.get('subject')
         
+        # Chỉ lấy câu hỏi học tập (exam_id IS NULL)
         query = """
             SELECT id, type, question, 
                    option_a, option_b, option_c, option_d, 
-                   correct_option, khoi, bai, subject,
-                   image_path, "optionA_i", "optionB_i", "optionC_i", "optionD_i"
+                   correct_option, khoi, bai, subject
             FROM questions
             WHERE exam_id IS NULL
         """
         query_params = []
         conditions = []
-
+        
+        if question_type:
+            conditions.append("type = %s")
+            query_params.append(question_type)
+        
         if khoi:
             conditions.append("khoi = %s")
             query_params.append(khoi)
-
+        
+        if subject:
+            conditions.append("subject = %s")
+            query_params.append(subject)
+        
         if bai_start is not None and bai_end is not None:
             if bai_start == bai_end:
                 conditions.append("bai = %s")
@@ -63,17 +69,9 @@ def get_questions():
                 conditions.append("bai BETWEEN %s AND %s")
                 query_params.extend([bai_start, bai_end])
         
-        if question_type:
-            conditions.append("type = %s")
-            query_params.append(question_type)
-        
-        if subject:
-            conditions.append("subject = %s")
-            query_params.append(subject)
-
         if conditions:
             query += " AND " + " AND ".join(conditions)
-
+        
         query += " ORDER BY bai, id"
         
         conn = get_db_connection()
@@ -89,17 +87,12 @@ def get_questions():
                     q['correct_option'] = q['correct_option'].split(',')
         
         return jsonify(questions)
-
+    
     except psycopg2.Error as err:
         return jsonify({"error": str(err)}), 500
     finally:
         if conn:
             conn.close()
-
-@app.route('/api/questions', methods=['GET'])
-def get_questions_api():
-    """Alias cho /questions để tương thích với frontend mới"""
-    return get_questions()
 
 # ========== API CHO TAB 3 (ĐỀ THI) ==========
 @app.route('/api/exams', methods=['GET'])
