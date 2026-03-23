@@ -179,7 +179,7 @@ def get_exam_questions():
             conn.close()
 
 # ========== API NỘP BÀI ==========
-@app.route('/submit', methods=['POST'])
+@app.route('/api/submit', methods=['POST'])
 def submit_quiz():
     conn = None
     data = request.json
@@ -222,7 +222,7 @@ def submit_quiz():
             conn.close()
 
 # ========== API LỊCH SỬ ==========
-@app.route('/history', methods=['GET'])
+@app.route('/api/history', methods=['GET'])
 def get_history():
     conn = None
     student_name = request.args.get('student_name')
@@ -254,7 +254,7 @@ def get_history():
             conn.close()
 
 # ========== API THỐNG KÊ ==========
-@app.route('/statistics', methods=['GET'])
+@app.route('/api/statistics', methods=['GET'])
 def get_statistics():
     conn = None
     lop = request.args.get('lop')
