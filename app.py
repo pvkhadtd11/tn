@@ -39,6 +39,16 @@ def get_hoc_sinh():
     cursor.close()
     conn.close()
     return jsonify(students)
+
+@app.route('/api/lop', methods=['GET'])
+def get_lop():
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=extras.RealDictCursor)
+    cursor.execute("SELECT DISTINCT lop FROM hoc_sinh ORDER BY lop")
+    rows = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return jsonify([row['lop'] for row in rows])
     
 # ========== API CHO TAB 1 & 2 (HỌC THEO BÀI) ==========
 @app.route('/api/questions', methods=['GET'])
