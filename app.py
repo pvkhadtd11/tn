@@ -353,14 +353,15 @@ def get_all_students():
     try:
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=extras.RealDictCursor)
+        # Dùng CASE WHEN để tránh chia cho 0 ngay trong SQL
         cursor.execute("""
             SELECT 
                 ten_hoc_sinh,
                 lop,
                 COUNT(*) as submission_count,
-                AVG(diem * 100.0 / tong_so_cau_hoi) as avg_score,
-                MIN(diem * 100.0 / tong_so_cau_hoi) as min_score,
-                MAX(diem * 100.0 / tong_so_cau_hoi) as max_score
+                AVG(CASE WHEN tong_so_cau_hoi > 0 THEN diem * 100.0 / tong_so_cau_hoi ELSE 0 END) as avg_score,
+                MIN(CASE WHEN tong_so_cau_hoi > 0 THEN diem * 100.0 / tong_so_cau_hoi ELSE 0 END) as min_score,
+                MAX(CASE WHEN tong_so_cau_hoi > 0 THEN diem * 100.0 / tong_so_cau_hoi ELSE 0 END) as max_score
             FROM ket_qua
             GROUP BY ten_hoc_sinh, lop
             ORDER BY ten_hoc_sinh
@@ -368,14 +369,14 @@ def get_all_students():
         students = cursor.fetchall()
         
         for s in students:
-            # Lấy lần đầu (id nhỏ nhất)
+            # Lấy lần đầu (id nhỏ nhất) – cũng kiểm tra tong_so_cau_hoi
             cursor.execute("""
                 SELECT diem, tong_so_cau_hoi FROM ket_qua
                 WHERE ten_hoc_sinh = %s AND lop = %s
                 ORDER BY id ASC LIMIT 1
             """, (s['ten_hoc_sinh'], s['lop']))
             first = cursor.fetchone()
-            if first and first['tong_so_cau_hoi']:
+            if first and first['tong_so_cau_hoi'] and first['tong_so_cau_hoi'] > 0:
                 s['first_score'] = round(first['diem'] * 100.0 / first['tong_so_cau_hoi'], 1)
             else:
                 s['first_score'] = 0
@@ -387,17 +388,17 @@ def get_all_students():
                 ORDER BY id DESC LIMIT 1
             """, (s['ten_hoc_sinh'], s['lop']))
             last = cursor.fetchone()
-            if last and last['tong_so_cau_hoi']:
+            if last and last['tong_so_cau_hoi'] and last['tong_so_cau_hoi'] > 0:
                 s['last_score'] = round(last['diem'] * 100.0 / last['tong_so_cau_hoi'], 1)
             else:
                 s['last_score'] = 0
             
+            # Xử lý avg_score có thể là None
             s['avg_score'] = round(s['avg_score'], 1) if s['avg_score'] else 0
         
         cursor.close()
         return jsonify(students)
     except Exception as e:
-        # In lỗi ra console để debug
         print(f"Lỗi trong /api/all-students: {str(e)}")
         return jsonify({"error": str(e)}), 500
     finally:
