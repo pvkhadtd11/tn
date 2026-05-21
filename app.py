@@ -26,6 +26,20 @@ def get_db_connection():
     conn = psycopg2.connect(db_url, sslmode="require")
     return conn
 
+@app.route('/api/hoc-sinh', methods=['GET'])
+def get_hoc_sinh():
+    lop = request.args.get('lop')
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=extras.RealDictCursor)
+    if lop:
+        cursor.execute("SELECT ten, lop FROM hoc_sinh WHERE lop = %s ORDER BY ten", (lop,))
+    else:
+        cursor.execute("SELECT ten, lop FROM hoc_sinh ORDER BY lop, ten")
+    students = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return jsonify(students)
+    
 # ========== API CHO TAB 1 & 2 (HỌC THEO BÀI) ==========
 @app.route('/api/questions', methods=['GET'])
 def get_questions():
