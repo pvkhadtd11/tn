@@ -5,6 +5,7 @@ from flask_cors import CORS
 import psycopg2
 from psycopg2 import extras
 from dotenv import load_dotenv
+from flask import render_template
 
 # Load environment variables
 load_dotenv()
@@ -12,7 +13,6 @@ load_dotenv()
 app = Flask(__name__)
 
 origins = [
-    "https://playgame.id.vn",
     "https://phamkha.io.vn",
     "https://www.phamkha.io.vn",
     "http://localhost:5000"
@@ -341,6 +341,125 @@ def add_header(response):
     response.expires = 0
     return response
 
+# 1. Trang quản trị
+@app.route('/admin')
+def admin_panel():
+    return render_template('admin.html')
+
+# 2. API lấy danh sách tất cả học sinh (kèm thống kê)
+@app.route('/api/all-students')
+def get_all_students():
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=extras.RealDictCursor)
+        
+        # Lấy thông tin tổng hợp cho từng học sinh
+        cursor.execute("""
+            SELECT 
+                ten_hoc_sinh,
+                lop,
+                COUNT(*) as submission_count,
+                AVG(diem * 100.0 / tong_so_cau_hoi) as avg_score,
+                MIN(diem * 100.0 / tong_so_cau_hoi) as min_score,
+                MAX(diem * 100.0 / tong_so_cau_hoi) as max_score
+            FROM ket_qua
+            GROUP BY ten_hoc_sinh, lop
+            ORDER BY ten_hoc_sinh
+        """)
+        students = cursor.fetchall()
+        
+        # Với mỗi học sinh, lấy điểm lần đầu và lần cuối
+        for s in students:
+            # Lần đầu
+            cursor.execute("""
+                SELECT diem, tong_so_cau_hoi
+                FROM ket_qua
+                WHERE ten_hoc_sinh = %s AND lop = %s
+                ORDER BY created_at ASC
+                LIMIT 1
+            """, (s['ten_hoc_sinh'], s['lop']))
+            first = cursor.fetchone()
+            s['first_score'] = round(first['diem'] * 100.0 / first['tong_so_cau_hoi'], 1) if first else 0
+            
+            # Lần cuối
+            cursor.execute("""
+                SELECT diem, tong_so_cau_hoi
+                FROM ket_qua
+                WHERE ten_hoc_sinh = %s AND lop = %s
+                ORDER BY created_at DESC
+                LIMIT 1
+            """, (s['ten_hoc_sinh'], s['lop']))
+            last = cursor.fetchone()
+            s['last_score'] = round(last['diem'] * 100.0 / last['tong_so_cau_hoi'], 1) if last else 0
+            
+            # Làm tròn avg_score
+            s['avg_score'] = round(s['avg_score'], 1) if s['avg_score'] else 0
+        
+        cursor.close()
+        return jsonify(students)
+    except psycopg2.Error as err:
+        return jsonify({"error": str(err)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+# 3. API lấy lịch sử làm bài của một học sinh (theo thứ tự thời gian tăng dần)
+#    Lưu ý: endpoint /api/history đã tồn tại nhưng đang ORDER BY id DESC
+#    Bạn có thể giữ nguyên hoặc tạo endpoint mới. Để tránh xung đột, tạo mới:
+@app.route('/api/student-history', methods=['GET'])
+def get_student_history():
+    conn = None
+    student_name = request.args.get('student_name')
+    lop = request.args.get('lop')
+    if not student_name or not lop:
+        return jsonify({"error": "Missing parameters"}), 400
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=extras.RealDictCursor)
+        cursor.execute("""
+            SELECT id, ten_hoc_sinh, lop, bai_start, bai_end, 
+                   tong_so_cau_hoi, diem, subject, exam_id, created_at
+            FROM ket_qua 
+            WHERE ten_hoc_sinh = %s AND lop = %s
+            ORDER BY created_at ASC
+        """, (student_name, lop))
+        history = cursor.fetchall()
+        cursor.close()
+        for row in history:
+            if row.get('created_at'):
+                row['created_at'] = row['created_at'].isoformat()
+        return jsonify(history)
+    except psycopg2.Error as err:
+        return jsonify({"error": str(err)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+# 4. (Tùy chọn) API thống kê tổng quan cho các thẻ số
+@app.route('/api/admin/stats')
+def admin_stats():
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=extras.RealDictCursor)
+        cursor.execute("SELECT COUNT(DISTINCT ten_hoc_sinh || '_' || lop) as total_students FROM ket_qua")
+        total_students = cursor.fetchone()['total_students']
+        cursor.execute("SELECT COUNT(*) as total_submissions FROM ket_qua")
+        total_submissions = cursor.fetchone()['total_submissions']
+        cursor.execute("SELECT AVG(diem * 100.0 / tong_so_cau_hoi) as avg_score FROM ket_qua")
+        avg_score = cursor.fetchone()['avg_score'] or 0
+        cursor.close()
+        return jsonify({
+            'total_students': total_students,
+            'total_submissions': total_submissions,
+            'avg_score': round(avg_score, 1)
+        })
+    except psycopg2.Error as err:
+        return jsonify({"error": str(err)}), 500
+    finally:
+        if conn:
+            conn.close()
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
