@@ -353,8 +353,6 @@ def get_all_students():
     try:
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=extras.RealDictCursor)
-        
-        # Lấy thông tin tổng hợp cho từng học sinh
         cursor.execute("""
             SELECT 
                 ten_hoc_sinh,
@@ -369,37 +367,39 @@ def get_all_students():
         """)
         students = cursor.fetchall()
         
-        # Với mỗi học sinh, lấy điểm lần đầu và lần cuối
         for s in students:
-            # Lần đầu
+            # Lấy lần đầu (id nhỏ nhất)
             cursor.execute("""
-                SELECT diem, tong_so_cau_hoi
-                FROM ket_qua
+                SELECT diem, tong_so_cau_hoi FROM ket_qua
                 WHERE ten_hoc_sinh = %s AND lop = %s
-                ORDER BY created_at ASC
-                LIMIT 1
+                ORDER BY id ASC LIMIT 1
             """, (s['ten_hoc_sinh'], s['lop']))
             first = cursor.fetchone()
-            s['first_score'] = round(first['diem'] * 100.0 / first['tong_so_cau_hoi'], 1) if first else 0
+            if first and first['tong_so_cau_hoi']:
+                s['first_score'] = round(first['diem'] * 100.0 / first['tong_so_cau_hoi'], 1)
+            else:
+                s['first_score'] = 0
             
-            # Lần cuối
+            # Lấy lần cuối (id lớn nhất)
             cursor.execute("""
-                SELECT diem, tong_so_cau_hoi
-                FROM ket_qua
+                SELECT diem, tong_so_cau_hoi FROM ket_qua
                 WHERE ten_hoc_sinh = %s AND lop = %s
-                ORDER BY created_at DESC
-                LIMIT 1
+                ORDER BY id DESC LIMIT 1
             """, (s['ten_hoc_sinh'], s['lop']))
             last = cursor.fetchone()
-            s['last_score'] = round(last['diem'] * 100.0 / last['tong_so_cau_hoi'], 1) if last else 0
+            if last and last['tong_so_cau_hoi']:
+                s['last_score'] = round(last['diem'] * 100.0 / last['tong_so_cau_hoi'], 1)
+            else:
+                s['last_score'] = 0
             
-            # Làm tròn avg_score
             s['avg_score'] = round(s['avg_score'], 1) if s['avg_score'] else 0
         
         cursor.close()
         return jsonify(students)
-    except psycopg2.Error as err:
-        return jsonify({"error": str(err)}), 500
+    except Exception as e:
+        # In lỗi ra console để debug
+        print(f"Lỗi trong /api/all-students: {str(e)}")
+        return jsonify({"error": str(e)}), 500
     finally:
         if conn:
             conn.close()
@@ -413,25 +413,23 @@ def get_student_history():
     student_name = request.args.get('student_name')
     lop = request.args.get('lop')
     if not student_name or not lop:
-        return jsonify({"error": "Missing parameters"}), 400
+        return jsonify({"error": "Thiếu tham số"}), 400
     try:
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=extras.RealDictCursor)
         cursor.execute("""
             SELECT id, ten_hoc_sinh, lop, bai_start, bai_end, 
-                   tong_so_cau_hoi, diem, subject, exam_id, created_at
+                   tong_so_cau_hoi, diem, subject, exam_id
             FROM ket_qua 
             WHERE ten_hoc_sinh = %s AND lop = %s
-            ORDER BY created_at ASC
+            ORDER BY id ASC
         """, (student_name, lop))
         history = cursor.fetchall()
         cursor.close()
-        for row in history:
-            if row.get('created_at'):
-                row['created_at'] = row['created_at'].isoformat()
         return jsonify(history)
-    except psycopg2.Error as err:
-        return jsonify({"error": str(err)}), 500
+    except Exception as e:
+        print(f"Lỗi trong /api/student-history: {str(e)}")
+        return jsonify({"error": str(e)}), 500
     finally:
         if conn:
             conn.close()
