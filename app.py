@@ -198,21 +198,18 @@ def submit_quiz():
                     SELECT id, correct_option FROM questions
                     WHERE id IN ({placeholders}) AND type = 'mcq'
                 """, q_ids)
-                correct_map = {}
-                for row in cursor.fetchall():
-                    # Chuẩn hóa correct_option về chữ hoa
-                    correct_map[row['id']] = row['correct_option'].upper() if row['correct_option'] else ''
+                correct_map = {row['id']: row['correct_option'].upper() if row['correct_option'] else '' for row in cursor.fetchall()}
                 
                 mcq_score = 0
                 mcq_detail = {}
                 for qid, user_choice in mcq_answers.items():
-                    # Chuẩn hóa user_choice lên chữ hoa
                     user_choice_upper = user_choice.upper() if user_choice else ''
-                    if correct_map.get(qid) == user_choice_upper:
+                    correct_opt = correct_map.get(qid)
+                    if correct_opt == user_choice_upper:
                         mcq_score += 0.25
-                        mcq_detail[qid] = 'correct'
+                        mcq_detail[qid] = {'status': 'correct', 'correct_option': correct_opt}
                     else:
-                        mcq_detail[qid] = 'wrong'
+                        mcq_detail[qid] = {'status': 'wrong', 'correct_option': correct_opt}
                 total_score += mcq_score
                 details['mcq'] = {
                     'score': mcq_score,
@@ -222,38 +219,35 @@ def submit_quiz():
         # ---------- XỬ LÝ TF CHO ĐỀ THI (nếu có exam_id) ----------
         if exam_id and 'tf' in answers and answers['tf']:
             tf_answers = answers['tf']
-            # Lấy danh sách ID của 6 câu TF theo đúng thứ tự từ database
             cursor.execute("""
                 SELECT id FROM questions
                 WHERE exam_id = %s AND type = 'tf'
                 ORDER BY id
             """, (exam_id,))
             tf_rows = cursor.fetchall()
-            tf_ids = [row['id'] for row in tf_rows]   # [câu1, câu2, câu3, câu4, câu5, câu6]
+            tf_ids = [row['id'] for row in tf_rows]
             
             if len(tf_ids) >= 6:
-                common_ids = tf_ids[:2]       # 2 câu chung
-                khmt_ids   = tf_ids[2:4]      # 2 câu KHMT
-                thud_ids   = tf_ids[4:6]      # 2 câu THUD
+                common_ids = tf_ids[:2]
+                khmt_ids   = tf_ids[2:4]
+                thud_ids   = tf_ids[4:6]
             else:
-                # fallback nếu không đủ câu
                 common_ids = tf_ids
                 khmt_ids = []
                 thud_ids = []
             
-            # Kiểm tra học sinh trả lời ban nào (dựa trên việc có ít nhất một câu trả lời trong ban đó)
+            # Xác định ban dựa trên câu trả lời thực tế
             has_khmt = any(any(tf_answers.get(qid, {}).values()) for qid in khmt_ids)
             has_thud = any(any(tf_answers.get(qid, {}).values()) for qid in thud_ids)
             
-            # Xác định ban hợp lệ (ưu tiên nếu chỉ làm 1 ban, nếu làm cả 2 thì coi như vi phạm)
             if has_khmt and has_thud:
-                selected_ban = "BOTH"   # vi phạm: không tính điểm phần riêng
+                selected_ban = "BOTH"
             elif has_khmt:
                 selected_ban = "KHMT"
             elif has_thud:
                 selected_ban = "THUD"
             else:
-                selected_ban = None   # không làm phần riêng
+                selected_ban = None
             
             # Lấy đáp án đúng cho tất cả 6 câu
             all_ids = common_ids + khmt_ids + thud_ids
@@ -273,7 +267,6 @@ def submit_quiz():
             tf_score = 0.0
             tf_details = {}
             
-            # Hàm tính điểm và trạng thái cho 1 câu
             def score_tf_question(qid, user_choices):
                 correct_opts = tf_correct_map.get(qid, [])
                 correct_count = 0
@@ -291,38 +284,34 @@ def submit_quiz():
                     else:
                         stmt_results[letter] = 'not_answered'
                 score = TF_POINTS.get(correct_count, 0)
-                return score, stmt_results, correct_count
+                return score, stmt_results, correct_count, correct_opts
             
-            # Chấm 2 câu chung (bắt buộc)
+            # Chấm 2 câu chung
             for qid in common_ids:
                 if qid in tf_answers:
-                    score, stmts, _ = score_tf_question(qid, tf_answers[qid])
+                    score, stmts, _, correct_opts = score_tf_question(qid, tf_answers[qid])
                     tf_score += score
-                    tf_details[qid] = {'score': score, 'statements': stmts}
+                    tf_details[qid] = {'score': score, 'statements': stmts, 'correct_option': correct_opts}
             
-            # Chấm phần riêng tuỳ theo ban
+            # Chấm phần riêng
             if selected_ban == "KHMT":
                 for qid in khmt_ids:
                     if qid in tf_answers:
-                        score, stmts, _ = score_tf_question(qid, tf_answers[qid])
+                        score, stmts, _, correct_opts = score_tf_question(qid, tf_answers[qid])
                         tf_score += score
-                        tf_details[qid] = {'score': score, 'statements': stmts}
-                # (Các câu THUD không được chấm, không xuất hiện trong detail)
+                        tf_details[qid] = {'score': score, 'statements': stmts, 'correct_option': correct_opts}
             elif selected_ban == "THUD":
                 for qid in thud_ids:
                     if qid in tf_answers:
-                        score, stmts, _ = score_tf_question(qid, tf_answers[qid])
+                        score, stmts, _, correct_opts = score_tf_question(qid, tf_answers[qid])
                         tf_score += score
-                        tf_details[qid] = {'score': score, 'statements': stmts}
-            elif selected_ban == "BOTH":
-                # Vi phạm: không tính điểm phần riêng, nhưng vẫn giữ lại detail để thông báo? Ở đây ta không thêm gì.
-                pass
-            # else selected_ban is None: không làm phần riêng, chỉ có điểm chung
+                        tf_details[qid] = {'score': score, 'statements': stmts, 'correct_option': correct_opts}
+            # Nếu BOTH hoặc None thì không thêm câu riêng nào
             
             total_score += tf_score
             details['tf'] = {'score': tf_score, 'detail': tf_details}
         
-        # ---------- XỬ LÝ TF THÔNG THƯỜNG (không phải đề thi) ----------
+        # ---------- XỬ LÝ TF THÔNG THƯỜNG (không đề thi) ----------
         elif 'tf' in answers and answers['tf'] and not exam_id:
             tf_answers = answers['tf']
             q_ids = list(tf_answers.keys())
@@ -360,7 +349,7 @@ def submit_quiz():
                             stmt_results[letter] = 'not_answered'
                     score = TF_POINTS.get(correct_count, 0)
                     tf_score += score
-                    tf_details[qid] = {'score': score, 'statements': stmt_results}
+                    tf_details[qid] = {'score': score, 'statements': stmt_results, 'correct_option': correct_opts}
                 total_score += tf_score
                 details['tf'] = {'score': tf_score, 'detail': tf_details}
         
