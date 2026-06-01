@@ -166,6 +166,7 @@ def get_exam_questions():
             conn.close()
 
 # ========== API CHẤM ĐIỂM (SERVER) ==========
+# ========== API CHẤM ĐIỂM (SERVER) ==========
 @app.route('/api/submit-quiz', methods=['POST'])
 def submit_quiz():
     conn = None
@@ -177,7 +178,16 @@ def submit_quiz():
         bai_end = data.get('bai_end')
         subject = data.get('subject')
         exam_id = data.get('exam_id')
-        answers = data.get('answers', {})
+        
+        # Lấy raw answers từ request
+        answers_raw = data.get('answers') or {}
+        mcq_raw = answers_raw.get('mcq') or {}
+        tf_raw = answers_raw.get('tf') or {}
+        
+        # FIX CỐT LÕI: Ép kiểu toàn bộ ID câu hỏi từ String (JSON) sang Integer
+        # Để khớp hoàn toàn với row['id'] từ database
+        mcq_answers = {int(k): v for k, v in mcq_raw.items()}
+        tf_answers = {int(k): v for k, v in tf_raw.items()}
         
         if not ten_hoc_sinh or not lop:
             return jsonify({'error': 'Thiếu thông tin học sinh'}), 400
@@ -189,8 +199,7 @@ def submit_quiz():
         details = {}
         
         # ---------- XỬ LÝ MCQ ----------
-        if 'mcq' in answers and answers['mcq']:
-            mcq_answers = answers['mcq']
+        if mcq_answers:
             q_ids = list(mcq_answers.keys())
             if q_ids:
                 placeholders = ','.join(['%s'] * len(q_ids))
@@ -199,11 +208,10 @@ def submit_quiz():
                     WHERE id IN ({placeholders})
                 """, q_ids)
                 rows = cursor.fetchall()
-                print("DEBUG MCQ rows:", rows)  # Xem console
                 
                 correct_map = {}
                 for row in rows:
-                    qid = row['id']
+                    qid = row['id'] # Là kiểu Integer
                     opt = row['correct_option']
                     if opt:
                         opt = str(opt).strip().upper()
@@ -211,21 +219,21 @@ def submit_quiz():
                 
                 mcq_score = 0
                 mcq_detail = {}
-                for qid, user_choice in mcq_answers.items():
+                for qid, user_choice in mcq_answers.items(): # qid giờ đã là Integer
                     user_choice_upper = user_choice.upper().strip() if user_choice else ''
                     correct_opt = correct_map.get(qid)
-                    print(f"   QID {qid}: user={user_choice_upper}, correct={correct_opt}")
+                    
                     if correct_opt and correct_opt == user_choice_upper:
                         mcq_score += 0.25
                         mcq_detail[qid] = {'status': 'correct', 'correct_option': correct_opt}
                     else:
                         mcq_detail[qid] = {'status': 'wrong', 'correct_option': correct_opt}
+                
                 total_score += mcq_score
                 details['mcq'] = {'score': mcq_score, 'detail': mcq_detail}
         
         # ---------- XỬ LÝ TF CHO ĐỀ THI ----------
-        if exam_id and 'tf' in answers and answers['tf']:
-            tf_answers = answers['tf']
+        if exam_id and tf_answers:
             cursor.execute("""
                 SELECT id FROM questions
                 WHERE exam_id = %s AND (type = 'tf' OR type = 'TF')
@@ -233,7 +241,6 @@ def submit_quiz():
             """, (exam_id,))
             tf_rows = cursor.fetchall()
             tf_ids = [row['id'] for row in tf_rows]
-            print("DEBUG TF ids:", tf_ids)
             
             if len(tf_ids) >= 6:
                 common_ids = tf_ids[:2]
@@ -244,6 +251,7 @@ def submit_quiz():
                 khmt_ids = []
                 thud_ids = []
             
+            # Logic check ban KHMT/THUD giờ sẽ chạy đúng nhờ keys là Integer
             has_khmt = any(any(tf_answers.get(qid, {}).values()) for qid in khmt_ids)
             has_thud = any(any(tf_answers.get(qid, {}).values()) for qid in thud_ids)
             
@@ -274,7 +282,6 @@ def submit_quiz():
                     if isinstance(opts, str):
                         opts = [x.strip().upper() for x in opts.split(',')]
                     correct_map[row['id']] = opts
-                print("DEBUG correct_map TF:", correct_map)
             
             TF_POINTS = {1: 0.1, 2: 0.25, 3: 0.5, 4: 1.0}
             tf_score = 0.0
@@ -297,6 +304,7 @@ def submit_quiz():
                             stmt_results[letter] = 'wrong'
                     else:
                         stmt_results[letter] = 'not_answered'
+                
                 score = TF_POINTS.get(correct_count, 0)
                 tf_score += score
                 tf_details[qid] = {
@@ -308,7 +316,7 @@ def submit_quiz():
             details['tf'] = {'score': tf_score, 'detail': tf_details}
         
         # Lưu kết quả
-        total_questions = len(answers.get('mcq', {})) + sum(len(v) for v in answers.get('tf', {}).values())
+        total_questions = len(mcq_answers) + sum(len(v) for v in tf_answers.values())
         cur = conn.cursor()
         cur.execute("""
             INSERT INTO ket_qua (ten_hoc_sinh, lop, bai_start, bai_end, tong_so_cau_hoi, diem, subject, exam_id)
