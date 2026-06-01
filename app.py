@@ -489,6 +489,62 @@ def health():
         if conn:
             conn.close()
 
+@app.route('/api/all-students', methods=['GET'])
+def get_all_students():
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        # Lấy danh sách học sinh duy nhất đã có kết quả
+        cur.execute("""
+            SELECT DISTINCT ten_hoc_sinh, lop
+            FROM ket_qua
+            ORDER BY lop, ten_hoc_sinh
+        """)
+        students = cur.fetchall()
+
+        result = []
+        for ten, lop in students:
+            # Lấy tất cả điểm và thời gian
+            cur.execute("""
+                SELECT diem, created_at
+                FROM ket_qua
+                WHERE ten_hoc_sinh = %s AND lop = %s
+                ORDER BY created_at ASC
+            """, (ten, lop))
+            records = cur.fetchall()
+
+            submission_count = len(records)
+            if submission_count == 0:
+                continue
+
+            diem_list = [diem for diem, _ in records]
+            total_diem = sum(diem_list)
+            avg_score = total_diem / submission_count
+            min_score = min(diem_list)
+            max_score = max(diem_list)
+            first_score = diem_list[0]
+            last_score = diem_list[-1]
+
+            result.append({
+                'ten_hoc_sinh': ten,
+                'lop': lop,
+                'submission_count': submission_count,
+                'avg_score': avg_score,
+                'min_score': min_score,
+                'max_score': max_score,
+                'first_score': first_score,
+                'last_score': last_score
+            })
+
+        cur.close()
+        conn.close()
+        return jsonify(result)
+
+    except Exception as e:
+        print("Lỗi /api/all-students:", e)
+        return jsonify({'error': str(e)}), 500
+
 # ========== CẤU HÌNH CACHE ==========
 @app.after_request
 def add_header(response):
