@@ -168,22 +168,6 @@ def get_exam_questions():
 # ========== API CHẤM ĐIỂM (SERVER) ==========
 @app.route('/api/submit-quiz', methods=['POST'])
 def submit_quiz():
-    """
-    Nhận bài làm từ client, chấm điểm và trả về kết quả (không gửi đáp án).
-    Body mẫu:
-    {
-        "ten_hoc_sinh": "Nguyễn Văn A",
-        "lop": "12A1",
-        "bai_start": 1,
-        "bai_end": 3,
-        "subject": "tin_hoc",
-        "exam_id": null,          # nếu là đề thi thì có exam_id
-        "answers": {
-            "mcq": { "123": "A", "456": "C" },
-            "tf": { "789": {"a": "Đúng", "b": "Sai", "c": "Đúng", "d": "Sai"} }
-        }
-    }
-    """
     conn = None
     try:
         data = request.get_json()
@@ -204,7 +188,7 @@ def submit_quiz():
         total_score = 0.0
         details = {}
         
-        # ---------- Xử lý MCQ ----------
+        # ---------- XỬ LÝ MCQ ----------
         if 'mcq' in answers and answers['mcq']:
             mcq_answers = answers['mcq']
             q_ids = list(mcq_answers.keys())
@@ -214,12 +198,17 @@ def submit_quiz():
                     SELECT id, correct_option FROM questions
                     WHERE id IN ({placeholders}) AND type = 'mcq'
                 """, q_ids)
-                correct_map = {row['id']: row['correct_option'] for row in cursor.fetchall()}
+                correct_map = {}
+                for row in cursor.fetchall():
+                    # Chuẩn hóa correct_option về chữ hoa
+                    correct_map[row['id']] = row['correct_option'].upper() if row['correct_option'] else ''
                 
                 mcq_score = 0
                 mcq_detail = {}
                 for qid, user_choice in mcq_answers.items():
-                    if correct_map.get(qid) == user_choice:
+                    # Chuẩn hóa user_choice lên chữ hoa
+                    user_choice_upper = user_choice.upper() if user_choice else ''
+                    if correct_map.get(qid) == user_choice_upper:
                         mcq_score += 0.25
                         mcq_detail[qid] = 'correct'
                     else:
@@ -230,10 +219,112 @@ def submit_quiz():
                     'detail': mcq_detail
                 }
         
-        # ---------- Xử lý TF ----------
-        TF_POINTS = {1: 0.1, 2: 0.25, 3: 0.5, 4: 1.0}
-        if 'tf' in answers and answers['tf']:
-            tf_answers = answers['tf']   # {qid: {"a":"Đúng","b":"Sai",...}}
+        # ---------- XỬ LÝ TF CHO ĐỀ THI (nếu có exam_id) ----------
+        if exam_id and 'tf' in answers and answers['tf']:
+            tf_answers = answers['tf']
+            # Lấy danh sách ID của 6 câu TF theo đúng thứ tự từ database
+            cursor.execute("""
+                SELECT id FROM questions
+                WHERE exam_id = %s AND type = 'tf'
+                ORDER BY id
+            """, (exam_id,))
+            tf_rows = cursor.fetchall()
+            tf_ids = [row['id'] for row in tf_rows]   # [câu1, câu2, câu3, câu4, câu5, câu6]
+            
+            if len(tf_ids) >= 6:
+                common_ids = tf_ids[:2]       # 2 câu chung
+                khmt_ids   = tf_ids[2:4]      # 2 câu KHMT
+                thud_ids   = tf_ids[4:6]      # 2 câu THUD
+            else:
+                # fallback nếu không đủ câu
+                common_ids = tf_ids
+                khmt_ids = []
+                thud_ids = []
+            
+            # Kiểm tra học sinh trả lời ban nào (dựa trên việc có ít nhất một câu trả lời trong ban đó)
+            has_khmt = any(any(tf_answers.get(qid, {}).values()) for qid in khmt_ids)
+            has_thud = any(any(tf_answers.get(qid, {}).values()) for qid in thud_ids)
+            
+            # Xác định ban hợp lệ (ưu tiên nếu chỉ làm 1 ban, nếu làm cả 2 thì coi như vi phạm)
+            if has_khmt and has_thud:
+                selected_ban = "BOTH"   # vi phạm: không tính điểm phần riêng
+            elif has_khmt:
+                selected_ban = "KHMT"
+            elif has_thud:
+                selected_ban = "THUD"
+            else:
+                selected_ban = None   # không làm phần riêng
+            
+            # Lấy đáp án đúng cho tất cả 6 câu
+            all_ids = common_ids + khmt_ids + thud_ids
+            placeholders = ','.join(['%s'] * len(all_ids))
+            cursor.execute(f"""
+                SELECT id, correct_option FROM questions
+                WHERE id IN ({placeholders}) AND type = 'tf'
+            """, all_ids)
+            tf_correct_map = {}
+            for row in cursor.fetchall():
+                opts = row['correct_option']
+                if isinstance(opts, str):
+                    opts = [x.strip().lower() for x in opts.split(',')]
+                tf_correct_map[row['id']] = opts
+            
+            TF_POINTS = {1: 0.1, 2: 0.25, 3: 0.5, 4: 1.0}
+            tf_score = 0.0
+            tf_details = {}
+            
+            # Hàm tính điểm và trạng thái cho 1 câu
+            def score_tf_question(qid, user_choices):
+                correct_opts = tf_correct_map.get(qid, [])
+                correct_count = 0
+                stmt_results = {}
+                for letter in ['a','b','c','d']:
+                    user_val = user_choices.get(letter)
+                    if user_val:
+                        is_correct = (user_val == "Đúng" and letter in correct_opts) or \
+                                     (user_val == "Sai" and letter not in correct_opts)
+                        if is_correct:
+                            correct_count += 1
+                            stmt_results[letter] = 'correct'
+                        else:
+                            stmt_results[letter] = 'wrong'
+                    else:
+                        stmt_results[letter] = 'not_answered'
+                score = TF_POINTS.get(correct_count, 0)
+                return score, stmt_results, correct_count
+            
+            # Chấm 2 câu chung (bắt buộc)
+            for qid in common_ids:
+                if qid in tf_answers:
+                    score, stmts, _ = score_tf_question(qid, tf_answers[qid])
+                    tf_score += score
+                    tf_details[qid] = {'score': score, 'statements': stmts}
+            
+            # Chấm phần riêng tuỳ theo ban
+            if selected_ban == "KHMT":
+                for qid in khmt_ids:
+                    if qid in tf_answers:
+                        score, stmts, _ = score_tf_question(qid, tf_answers[qid])
+                        tf_score += score
+                        tf_details[qid] = {'score': score, 'statements': stmts}
+                # (Các câu THUD không được chấm, không xuất hiện trong detail)
+            elif selected_ban == "THUD":
+                for qid in thud_ids:
+                    if qid in tf_answers:
+                        score, stmts, _ = score_tf_question(qid, tf_answers[qid])
+                        tf_score += score
+                        tf_details[qid] = {'score': score, 'statements': stmts}
+            elif selected_ban == "BOTH":
+                # Vi phạm: không tính điểm phần riêng, nhưng vẫn giữ lại detail để thông báo? Ở đây ta không thêm gì.
+                pass
+            # else selected_ban is None: không làm phần riêng, chỉ có điểm chung
+            
+            total_score += tf_score
+            details['tf'] = {'score': tf_score, 'detail': tf_details}
+        
+        # ---------- XỬ LÝ TF THÔNG THƯỜNG (không phải đề thi) ----------
+        elif 'tf' in answers and answers['tf'] and not exam_id:
+            tf_answers = answers['tf']
             q_ids = list(tf_answers.keys())
             if q_ids:
                 placeholders = ','.join(['%s'] * len(q_ids))
@@ -248,13 +339,14 @@ def submit_quiz():
                         opts = [x.strip().lower() for x in opts.split(',')]
                     tf_correct_map[row['id']] = opts
                 
+                TF_POINTS = {1: 0.1, 2: 0.25, 3: 0.5, 4: 1.0}
                 tf_score = 0.0
                 tf_details = {}
                 for qid, user_choices in tf_answers.items():
                     correct_opts = tf_correct_map.get(qid, [])
                     correct_count = 0
                     stmt_results = {}
-                    for letter in ['a', 'b', 'c', 'd']:
+                    for letter in ['a','b','c','d']:
                         user_val = user_choices.get(letter)
                         if user_val:
                             is_correct = (user_val == "Đúng" and letter in correct_opts) or \
@@ -268,15 +360,9 @@ def submit_quiz():
                             stmt_results[letter] = 'not_answered'
                     score = TF_POINTS.get(correct_count, 0)
                     tf_score += score
-                    tf_details[qid] = {
-                        'score': score,
-                        'statements': stmt_results
-                    }
+                    tf_details[qid] = {'score': score, 'statements': stmt_results}
                 total_score += tf_score
-                details['tf'] = {
-                    'score': tf_score,
-                    'detail': tf_details
-                }
+                details['tf'] = {'score': tf_score, 'detail': tf_details}
         
         # Lưu kết quả vào bảng ket_qua
         total_questions = len(answers.get('mcq', {})) + sum(len(v) for v in answers.get('tf', {}).values())
@@ -295,7 +381,7 @@ def submit_quiz():
         }), 200
         
     except Exception as e:
-        print(f"❌ Lỗi khi chấm điểm: {e}")
+        print(f"❌ Lỗi submit: {e}")
         import traceback
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
