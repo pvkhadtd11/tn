@@ -194,13 +194,12 @@ def submit_quiz():
             q_ids = list(mcq_answers.keys())
             if q_ids:
                 placeholders = ','.join(['%s'] * len(q_ids))
-                # Không lọc type, chỉ lấy theo ID
                 cursor.execute(f"""
                     SELECT id, correct_option FROM questions
                     WHERE id IN ({placeholders})
                 """, q_ids)
                 rows = cursor.fetchall()
-                print("DEBUG MCQ rows:", rows)  # Kiểm tra console
+                print("DEBUG MCQ rows:", rows)  # Xem console
                 
                 correct_map = {}
                 for row in rows:
@@ -215,26 +214,26 @@ def submit_quiz():
                 for qid, user_choice in mcq_answers.items():
                     user_choice_upper = user_choice.upper().strip() if user_choice else ''
                     correct_opt = correct_map.get(qid)
-                    print(f"QID {qid}: user={user_choice_upper}, correct={correct_opt}")
+                    print(f"   QID {qid}: user={user_choice_upper}, correct={correct_opt}")
                     if correct_opt and correct_opt == user_choice_upper:
                         mcq_score += 0.25
-                        mcq_detail[qid] = 'correct'
+                        mcq_detail[qid] = {'status': 'correct', 'correct_option': correct_opt}
                     else:
-                        mcq_detail[qid] = 'wrong'
+                        mcq_detail[qid] = {'status': 'wrong', 'correct_option': correct_opt}
                 total_score += mcq_score
                 details['mcq'] = {'score': mcq_score, 'detail': mcq_detail}
         
         # ---------- XỬ LÝ TF CHO ĐỀ THI ----------
         if exam_id and 'tf' in answers and answers['tf']:
             tf_answers = answers['tf']
-            # Lấy danh sách câu TF của đề thi theo thứ tự ID
             cursor.execute("""
                 SELECT id FROM questions
-                WHERE exam_id = %s AND type = 'tf'
+                WHERE exam_id = %s AND (type = 'tf' OR type = 'TF')
                 ORDER BY id
             """, (exam_id,))
             tf_rows = cursor.fetchall()
             tf_ids = [row['id'] for row in tf_rows]
+            print("DEBUG TF ids:", tf_ids)
             
             if len(tf_ids) >= 6:
                 common_ids = tf_ids[:2]
@@ -245,7 +244,6 @@ def submit_quiz():
                 khmt_ids = []
                 thud_ids = []
             
-            # Xác định ban dựa trên việc có trả lời ít nhất một ý trong ban đó
             has_khmt = any(any(tf_answers.get(qid, {}).values()) for qid in khmt_ids)
             has_thud = any(any(tf_answers.get(qid, {}).values()) for qid in thud_ids)
             
@@ -257,13 +255,11 @@ def submit_quiz():
             elif has_thud:
                 selected_ban = "THUD"
             
-            # Các câu cần chấm: chung + ban đã chọn (nếu có)
             ids_to_cham = common_ids.copy()
             if selected_ban == "KHMT":
                 ids_to_cham.extend(khmt_ids)
             elif selected_ban == "THUD":
                 ids_to_cham.extend(thud_ids)
-            # Nếu BOTH hoặc None thì chỉ chấm common
             
             if ids_to_cham:
                 placeholders = ','.join(['%s'] * len(ids_to_cham))
@@ -276,9 +272,9 @@ def submit_quiz():
                 for row in correct_rows:
                     opts = row['correct_option']
                     if isinstance(opts, str):
-                        # Chuyển 'A,B,D' thành ['A','B','D']
                         opts = [x.strip().upper() for x in opts.split(',')]
                     correct_map[row['id']] = opts
+                print("DEBUG correct_map TF:", correct_map)
             
             TF_POINTS = {1: 0.1, 2: 0.25, 3: 0.5, 4: 1.0}
             tf_score = 0.0
@@ -303,12 +299,15 @@ def submit_quiz():
                         stmt_results[letter] = 'not_answered'
                 score = TF_POINTS.get(correct_count, 0)
                 tf_score += score
-                tf_details[qid] = {'score': score, 'statements': stmt_results}
-            
+                tf_details[qid] = {
+                    'score': score,
+                    'statements': stmt_results,
+                    'correct_option': correct_opts
+                }
             total_score += tf_score
             details['tf'] = {'score': tf_score, 'detail': tf_details}
         
-        # ---------- LƯU KẾT QUẢ ----------
+        # Lưu kết quả
         total_questions = len(answers.get('mcq', {})) + sum(len(v) for v in answers.get('tf', {}).values())
         cur = conn.cursor()
         cur.execute("""
@@ -332,6 +331,15 @@ def submit_quiz():
     finally:
         if conn:
             conn.close()
+            
+@app.route('/debug-correct', methods=['GET'])
+def debug_correct():
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=extras.RealDictCursor)
+    cursor.execute("SELECT id, correct_option FROM questions WHERE id IN (1111, 1135) LIMIT 5")
+    rows = cursor.fetchall()
+    conn.close()
+    return jsonify(rows)
 
 # ========== API LỊCH SỬ ==========
 @app.route('/history', methods=['GET'])
