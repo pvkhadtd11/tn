@@ -171,6 +171,11 @@ def submit_quiz():
     conn = None
     try:
         data = request.get_json()
+        print("\n" + "="*60)
+        print("📥 RECEIVED PAYLOAD:")
+        print(data)
+        print("="*60)
+        
         ten_hoc_sinh = data.get('ten_hoc_sinh')
         lop = data.get('lop')
         bai_start = data.get('bai_start')
@@ -188,145 +193,65 @@ def submit_quiz():
         total_score = 0.0
         details = {}
         
-        # ---------- XỬ LÝ MCQ ----------
+        # ---------- MCQ ----------
         if 'mcq' in answers and answers['mcq']:
             mcq_answers = answers['mcq']
             q_ids = list(mcq_answers.keys())
             if q_ids:
                 placeholders = ','.join(['%s'] * len(q_ids))
+                # Không lọc theo type, chỉ lấy theo ID
                 cursor.execute(f"""
                     SELECT id, correct_option FROM questions
-                    WHERE id IN ({placeholders}) AND type = 'mcq'
+                    WHERE id IN ({placeholders})
                 """, q_ids)
-                correct_map = {row['id']: row['correct_option'].upper() if row['correct_option'] else '' for row in cursor.fetchall()}
+                rows = cursor.fetchall()
+                print("🔍 MCQ rows from DB:", rows)
+                
+                correct_map = {}
+                for row in rows:
+                    qid = row['id']
+                    opt = row.get('correct_option')
+                    if opt is not None:
+                        opt = str(opt).strip().upper()
+                    correct_map[qid] = opt
                 
                 mcq_score = 0
                 mcq_detail = {}
                 for qid, user_choice in mcq_answers.items():
-                    user_choice_upper = user_choice.upper() if user_choice else ''
+                    user_choice_upper = user_choice.upper().strip() if user_choice else ''
                     correct_opt = correct_map.get(qid)
-                    if correct_opt == user_choice_upper:
+                    print(f"   QID {qid}: user={user_choice_upper}, correct={correct_opt}")
+                    if correct_opt and correct_opt == user_choice_upper:
                         mcq_score += 0.25
-                        mcq_detail[qid] = {'status': 'correct', 'correct_option': correct_opt}
+                        mcq_detail[qid] = 'correct'
                     else:
-                        mcq_detail[qid] = {'status': 'wrong', 'correct_option': correct_opt}
+                        mcq_detail[qid] = 'wrong'
                 total_score += mcq_score
-                details['mcq'] = {
-                    'score': mcq_score,
-                    'detail': mcq_detail
-                }
+                details['mcq'] = {'score': mcq_score, 'detail': mcq_detail}
         
-        # ---------- XỬ LÝ TF CHO ĐỀ THI (nếu có exam_id) ----------
-        if exam_id and 'tf' in answers and answers['tf']:
-            tf_answers = answers['tf']
-            cursor.execute("""
-                SELECT id FROM questions
-                WHERE exam_id = %s AND type = 'tf'
-                ORDER BY id
-            """, (exam_id,))
-            tf_rows = cursor.fetchall()
-            tf_ids = [row['id'] for row in tf_rows]
-            
-            if len(tf_ids) >= 6:
-                common_ids = tf_ids[:2]
-                khmt_ids   = tf_ids[2:4]
-                thud_ids   = tf_ids[4:6]
-            else:
-                common_ids = tf_ids
-                khmt_ids = []
-                thud_ids = []
-            
-            # Xác định ban dựa trên câu trả lời thực tế
-            has_khmt = any(any(tf_answers.get(qid, {}).values()) for qid in khmt_ids)
-            has_thud = any(any(tf_answers.get(qid, {}).values()) for qid in thud_ids)
-            
-            if has_khmt and has_thud:
-                selected_ban = "BOTH"
-            elif has_khmt:
-                selected_ban = "KHMT"
-            elif has_thud:
-                selected_ban = "THUD"
-            else:
-                selected_ban = None
-            
-            # Lấy đáp án đúng cho tất cả 6 câu
-            all_ids = common_ids + khmt_ids + thud_ids
-            placeholders = ','.join(['%s'] * len(all_ids))
-            cursor.execute(f"""
-                SELECT id, correct_option FROM questions
-                WHERE id IN ({placeholders}) AND type = 'tf'
-            """, all_ids)
-            tf_correct_map = {}
-            for row in cursor.fetchall():
-                opts = row['correct_option']
-                if isinstance(opts, str):
-                    opts = [x.strip().lower() for x in opts.split(',')]
-                tf_correct_map[row['id']] = opts
-            
-            TF_POINTS = {1: 0.1, 2: 0.25, 3: 0.5, 4: 1.0}
-            tf_score = 0.0
-            tf_details = {}
-            
-            def score_tf_question(qid, user_choices):
-                correct_opts = tf_correct_map.get(qid, [])
-                correct_count = 0
-                stmt_results = {}
-                for letter in ['a','b','c','d']:
-                    user_val = user_choices.get(letter)
-                    if user_val:
-                        is_correct = (user_val == "Đúng" and letter in correct_opts) or \
-                                     (user_val == "Sai" and letter not in correct_opts)
-                        if is_correct:
-                            correct_count += 1
-                            stmt_results[letter] = 'correct'
-                        else:
-                            stmt_results[letter] = 'wrong'
-                    else:
-                        stmt_results[letter] = 'not_answered'
-                score = TF_POINTS.get(correct_count, 0)
-                return score, stmt_results, correct_count, correct_opts
-            
-            # Chấm 2 câu chung
-            for qid in common_ids:
-                if qid in tf_answers:
-                    score, stmts, _, correct_opts = score_tf_question(qid, tf_answers[qid])
-                    tf_score += score
-                    tf_details[qid] = {'score': score, 'statements': stmts, 'correct_option': correct_opts}
-            
-            # Chấm phần riêng
-            if selected_ban == "KHMT":
-                for qid in khmt_ids:
-                    if qid in tf_answers:
-                        score, stmts, _, correct_opts = score_tf_question(qid, tf_answers[qid])
-                        tf_score += score
-                        tf_details[qid] = {'score': score, 'statements': stmts, 'correct_option': correct_opts}
-            elif selected_ban == "THUD":
-                for qid in thud_ids:
-                    if qid in tf_answers:
-                        score, stmts, _, correct_opts = score_tf_question(qid, tf_answers[qid])
-                        tf_score += score
-                        tf_details[qid] = {'score': score, 'statements': stmts, 'correct_option': correct_opts}
-            # Nếu BOTH hoặc None thì không thêm câu riêng nào
-            
-            total_score += tf_score
-            details['tf'] = {'score': tf_score, 'detail': tf_details}
-        
-        # ---------- XỬ LÝ TF THÔNG THƯỜNG (không đề thi) ----------
-        elif 'tf' in answers and answers['tf'] and not exam_id:
+        # ---------- TF ----------
+        if 'tf' in answers and answers['tf']:
             tf_answers = answers['tf']
             q_ids = list(tf_answers.keys())
             if q_ids:
                 placeholders = ','.join(['%s'] * len(q_ids))
                 cursor.execute(f"""
                     SELECT id, correct_option FROM questions
-                    WHERE id IN ({placeholders}) AND type = 'tf'
+                    WHERE id IN ({placeholders})
                 """, q_ids)
+                rows = cursor.fetchall()
+                print("🔍 TF rows from DB:", rows)
+                
                 tf_correct_map = {}
-                for row in cursor.fetchall():
-                    opts = row['correct_option']
-                    if isinstance(opts, str):
-                        opts = [x.strip().lower() for x in opts.split(',')]
-                    tf_correct_map[row['id']] = opts
+                for row in rows:
+                    qid = row['id']
+                    opt = row.get('correct_option')
+                    if opt is not None and isinstance(opt, str):
+                        # Chuẩn hóa: chuyển thành list chữ thường, bỏ khoảng trắng
+                        opt = [x.strip().lower() for x in opt.split(',')]
+                    else:
+                        opt = []
+                    tf_correct_map[qid] = opt
                 
                 TF_POINTS = {1: 0.1, 2: 0.25, 3: 0.5, 4: 1.0}
                 tf_score = 0.0
@@ -349,11 +274,11 @@ def submit_quiz():
                             stmt_results[letter] = 'not_answered'
                     score = TF_POINTS.get(correct_count, 0)
                     tf_score += score
-                    tf_details[qid] = {'score': score, 'statements': stmt_results, 'correct_option': correct_opts}
+                    tf_details[qid] = {'score': score, 'statements': stmt_results}
                 total_score += tf_score
                 details['tf'] = {'score': tf_score, 'detail': tf_details}
         
-        # Lưu kết quả vào bảng ket_qua
+        # Lưu kết quả
         total_questions = len(answers.get('mcq', {})) + sum(len(v) for v in answers.get('tf', {}).values())
         cur = conn.cursor()
         cur.execute("""
@@ -362,6 +287,9 @@ def submit_quiz():
         """, (ten_hoc_sinh, lop, bai_start, bai_end, total_questions, total_score, subject, exam_id))
         conn.commit()
         cur.close()
+        
+        print("✅ Final score:", total_score)
+        print("="*60 + "\n")
         
         return jsonify({
             'message': 'Success',
