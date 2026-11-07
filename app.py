@@ -14,7 +14,7 @@ app = Flask(__name__)
 origins = [
     "https://phamkha.io.vn",
     "https://www.phamkha.io.vn",
-    "http://localhost:5000"
+    "http://localhost:5000",
 ]
 CORS(app, supports_credentials=True, origins=origins)
 
@@ -31,13 +31,12 @@ def get_questions():
     """Lấy câu hỏi học tập theo bài (MCQ hoặc TF) – KHÔNG BAO GỒM correct_option"""
     conn = None
     try:
-        question_type = request.args.get('type')  # 'mcq' hoặc 'tf'
+        question_type = request.args.get('type')
         khoi = request.args.get('khoi', type=int)
         bai_start = request.args.get('baiStart', type=int)
         bai_end = request.args.get('baiEnd', type=int)
         subject = request.args.get('subject')
-        
-        # Chỉ lấy câu hỏi học tập (exam_id IS NULL)
+
         query = """
             SELECT id, type, question, 
                    option_a, option_b, option_c, option_d, 
@@ -47,19 +46,19 @@ def get_questions():
         """
         query_params = []
         conditions = []
-        
+
         if question_type:
             conditions.append("type = %s")
             query_params.append(question_type)
-        
+
         if khoi:
             conditions.append("khoi = %s")
             query_params.append(khoi)
-        
+
         if subject:
             conditions.append("subject = %s")
             query_params.append(subject)
-        
+
         if bai_start is not None and bai_end is not None:
             if bai_start == bai_end:
                 conditions.append("bai = %s")
@@ -67,20 +66,20 @@ def get_questions():
             else:
                 conditions.append("bai BETWEEN %s AND %s")
                 query_params.extend([bai_start, bai_end])
-        
+
         if conditions:
             query += " AND " + " AND ".join(conditions)
-        
+
         query += " ORDER BY bai, id"
-        
+
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=extras.RealDictCursor)
         cursor.execute(query, query_params)
         questions = cursor.fetchall()
         cursor.close()
-        
+
         return jsonify(questions)
-    
+
     except psycopg2.Error as err:
         return jsonify({"error": str(err)}), 500
     finally:
@@ -90,12 +89,11 @@ def get_questions():
 # ========== API CHO TAB 3 (ĐỀ THI) ==========
 @app.route('/api/exams', methods=['GET'])
 def get_exams():
-    """Lấy danh sách các đề thi có sẵn"""
     conn = None
     try:
         khoi = request.args.get('khoi', type=int)
         subject = request.args.get('subject')
-        
+
         query = """
             SELECT DISTINCT exam_id 
             FROM questions 
@@ -104,15 +102,15 @@ def get_exams():
               AND subject = %s
             ORDER BY exam_id
         """
-        
+
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=extras.RealDictCursor)
         cursor.execute(query, (khoi, subject))
         exams = cursor.fetchall()
         cursor.close()
-        
+
         return jsonify(exams)
-    
+
     except psycopg2.Error as err:
         return jsonify({"error": str(err)}), 500
     finally:
@@ -121,19 +119,18 @@ def get_exams():
 
 @app.route('/api/exam-questions', methods=['GET'])
 def get_exam_questions():
-    """Lấy câu hỏi cho đề thi – KHÔNG BAO GỒM correct_option"""
     conn = None
     try:
         exam_id = request.args.get('exam_id', type=int)
         khoi = request.args.get('khoi', type=int)
         subject = request.args.get('subject')
-        
+
         if not exam_id:
             return jsonify({"error": "exam_id is required"}), 400
-        
+
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=extras.RealDictCursor)
-        
+
         query = """
             SELECT id, type, question, 
                    option_a, option_b, option_c, option_d,
@@ -145,27 +142,23 @@ def get_exam_questions():
         cursor.execute(query, (exam_id, khoi, subject))
         all_questions = cursor.fetchall()
         cursor.close()
-        
-        # Tách MCQ và TF
+
         mcq_questions = [q for q in all_questions if q['type'] == 'mcq']
         tf_questions = [q for q in all_questions if q['type'] == 'tf']
-        
-        # Xáo trộn thứ tự câu hỏi
+
         random.shuffle(mcq_questions)
         random.shuffle(tf_questions)
-        
-        # Ghép lại: MCQ trước, TF sau
+
         final_questions = mcq_questions + tf_questions
-        
+
         return jsonify(final_questions)
-    
+
     except psycopg2.Error as err:
         return jsonify({"error": str(err)}), 500
     finally:
         if conn:
             conn.close()
 
-# ========== API CHẤM ĐIỂM (SERVER) ==========
 # ========== API CHẤM ĐIỂM (SERVER) ==========
 @app.route('/api/submit-quiz', methods=['POST'])
 def submit_quiz():
@@ -178,26 +171,23 @@ def submit_quiz():
         bai_end = data.get('bai_end')
         subject = data.get('subject')
         exam_id = data.get('exam_id')
-        
-        # Lấy raw answers từ request
+
         answers_raw = data.get('answers') or {}
         mcq_raw = answers_raw.get('mcq') or {}
         tf_raw = answers_raw.get('tf') or {}
-        
-        # FIX CỐT LÕI: Ép kiểu toàn bộ ID câu hỏi từ String (JSON) sang Integer
-        # Để khớp hoàn toàn với row['id'] từ database
+
         mcq_answers = {int(k): v for k, v in mcq_raw.items()}
         tf_answers = {int(k): v for k, v in tf_raw.items()}
-        
+
         if not ten_hoc_sinh or not lop:
             return jsonify({'error': 'Thiếu thông tin học sinh'}), 400
-        
+
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=extras.RealDictCursor)
-        
+
         total_score = 0.0
         details = {}
-        
+
         # ---------- XỬ LÝ MCQ ----------
         if mcq_answers:
             q_ids = list(mcq_answers.keys())
@@ -208,30 +198,30 @@ def submit_quiz():
                     WHERE id IN ({placeholders})
                 """, q_ids)
                 rows = cursor.fetchall()
-                
+
                 correct_map = {}
                 for row in rows:
-                    qid = row['id'] # Là kiểu Integer
+                    qid = row['id']
                     opt = row['correct_option']
                     if opt:
                         opt = str(opt).strip().upper()
                     correct_map[qid] = opt
-                
+
                 mcq_score = 0
                 mcq_detail = {}
-                for qid, user_choice in mcq_answers.items(): # qid giờ đã là Integer
+                for qid, user_choice in mcq_answers.items():
                     user_choice_upper = user_choice.upper().strip() if user_choice else ''
                     correct_opt = correct_map.get(qid)
-                    
+
                     if correct_opt and correct_opt == user_choice_upper:
                         mcq_score += 0.25
                         mcq_detail[qid] = {'status': 'correct', 'correct_option': correct_opt}
                     else:
                         mcq_detail[qid] = {'status': 'wrong', 'correct_option': correct_opt}
-                
+
                 total_score += mcq_score
                 details['mcq'] = {'score': mcq_score, 'detail': mcq_detail}
-        
+
         # ---------- XỬ LÝ TF CHO ĐỀ THI ----------
         if exam_id and tf_answers:
             cursor.execute("""
@@ -241,7 +231,7 @@ def submit_quiz():
             """, (exam_id,))
             tf_rows = cursor.fetchall()
             tf_ids = [row['id'] for row in tf_rows]
-            
+
             if len(tf_ids) >= 6:
                 common_ids = tf_ids[:2]
                 khmt_ids = tf_ids[2:4]
@@ -250,11 +240,10 @@ def submit_quiz():
                 common_ids = tf_ids
                 khmt_ids = []
                 thud_ids = []
-            
-            # Logic check ban KHMT/THUD giờ sẽ chạy đúng nhờ keys là Integer
+
             has_khmt = any(any(tf_answers.get(qid, {}).values()) for qid in khmt_ids)
             has_thud = any(any(tf_answers.get(qid, {}).values()) for qid in thud_ids)
-            
+
             selected_ban = None
             if has_khmt and has_thud:
                 selected_ban = "BOTH"
@@ -262,13 +251,13 @@ def submit_quiz():
                 selected_ban = "KHMT"
             elif has_thud:
                 selected_ban = "THUD"
-            
+
             ids_to_cham = common_ids.copy()
             if selected_ban == "KHMT":
                 ids_to_cham.extend(khmt_ids)
             elif selected_ban == "THUD":
                 ids_to_cham.extend(thud_ids)
-            
+
             if ids_to_cham:
                 placeholders = ','.join(['%s'] * len(ids_to_cham))
                 cursor.execute(f"""
@@ -282,11 +271,11 @@ def submit_quiz():
                     if isinstance(opts, str):
                         opts = [x.strip().upper() for x in opts.split(',')]
                     correct_map[row['id']] = opts
-            
+
             TF_POINTS = {1: 0.1, 2: 0.25, 3: 0.5, 4: 1.0}
             tf_score = 0.0
             tf_details = {}
-            
+
             for qid in ids_to_cham:
                 user_choices = tf_answers.get(qid, {})
                 correct_opts = correct_map.get(qid, [])
@@ -304,7 +293,7 @@ def submit_quiz():
                             stmt_results[letter] = 'wrong'
                     else:
                         stmt_results[letter] = 'not_answered'
-                
+
                 score = TF_POINTS.get(correct_count, 0)
                 tf_score += score
                 tf_details[qid] = {
@@ -314,9 +303,11 @@ def submit_quiz():
                 }
             total_score += tf_score
             details['tf'] = {'score': tf_score, 'detail': tf_details}
-        
-        # Lưu kết quả
-        total_questions = len(mcq_answers) + sum(len(v) for v in tf_answers.values())
+
+        # ✅ SỬA: đếm đúng số câu TF thực sự trả lời (không phải ×4)
+        tf_count = sum(1 for v in tf_answers.values() if any(v.values()))
+        total_questions = len(mcq_answers) + tf_count
+
         cur = conn.cursor()
         cur.execute("""
             INSERT INTO ket_qua (ten_hoc_sinh, lop, bai_start, bai_end, tong_so_cau_hoi, diem, subject, exam_id)
@@ -324,13 +315,13 @@ def submit_quiz():
         """, (ten_hoc_sinh, lop, bai_start, bai_end, total_questions, total_score, subject, exam_id))
         conn.commit()
         cur.close()
-        
+
         return jsonify({
             'message': 'Success',
             'total_score': total_score,
             'details': details
         }), 200
-        
+
     except Exception as e:
         print(f"❌ Lỗi submit: {e}")
         import traceback
@@ -339,7 +330,132 @@ def submit_quiz():
     finally:
         if conn:
             conn.close()
-            
+
+
+# ✅ THÊM: API chấm riêng cho Tab 2 (TF học theo bài, 0.25đ/phát biểu)
+@app.route('/api/submit-tf-practice', methods=['POST'])
+def submit_tf_practice():
+    """
+    Chấm Tab 2 – Trắc nghiệm Đúng/Sai học theo bài.
+    Mỗi phát biểu đúng = 0.25đ. Tối đa 1.0đ/câu (4 phát biểu).
+    Không áp dụng logic chia ban KHMT/THUD của đề thi.
+    """
+    conn = None
+    try:
+        data = request.get_json()
+        ten_hoc_sinh = data.get('ten_hoc_sinh')
+        lop = data.get('lop')
+        bai_start = data.get('bai_start')
+        bai_end = data.get('bai_end')
+        subject = data.get('subject')
+
+        answers_raw = data.get('answers') or {}
+        tf_raw = answers_raw.get('tf') or {}
+
+        if not ten_hoc_sinh or not lop:
+            return jsonify({'error': 'Thiếu thông tin học sinh'}), 400
+        if not tf_raw:
+            return jsonify({'error': 'Không có câu trả lời nào'}), 400
+
+        tf_answers = {int(k): v for k, v in tf_raw.items()}
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=extras.RealDictCursor)
+
+        q_ids = list(tf_answers.keys())
+        placeholders = ','.join(['%s'] * len(q_ids))
+        cursor.execute(f"""
+            SELECT id, correct_option
+            FROM questions
+            WHERE id IN ({placeholders})
+              AND (type = 'tf' OR type = 'TF')
+              AND exam_id IS NULL
+        """, q_ids)
+        rows = cursor.fetchall()
+
+        correct_map = {}
+        for row in rows:
+            opts = row['correct_option']
+            if isinstance(opts, str):
+                opts = [x.strip().upper() for x in opts.split(',') if x.strip()]
+            elif opts is None:
+                opts = []
+            else:
+                opts = [str(x).strip().upper() for x in opts]
+            correct_map[row['id']] = opts
+
+        POINT_PER_STATEMENT = 0.25
+        total_score = 0.0
+        tf_details = {}
+
+        for qid in q_ids:
+            user_choices = tf_answers.get(qid, {})
+            correct_opts = correct_map.get(qid, [])
+            correct_count = 0
+            stmt_results = {}
+
+            for letter in ['a', 'b', 'c', 'd']:
+                user_val = user_choices.get(letter)
+                if user_val:
+                    is_correct = (
+                        (user_val == "Đúng" and letter.upper() in correct_opts) or
+                        (user_val == "Sai"  and letter.upper() not in correct_opts)
+                    )
+                    if is_correct:
+                        correct_count += 1
+                        stmt_results[letter] = 'correct'
+                    else:
+                        stmt_results[letter] = 'wrong'
+                else:
+                    stmt_results[letter] = 'not_answered'
+
+            question_score = round(correct_count * POINT_PER_STATEMENT, 2)
+            total_score += question_score
+            tf_details[qid] = {
+                'score': question_score,
+                'correct_count': correct_count,
+                'statements': stmt_results,
+                'correct_option': correct_opts,
+            }
+
+        total_score = round(total_score, 2)
+        max_score = round(len(q_ids) * 4 * POINT_PER_STATEMENT, 2)
+
+        answered_count = sum(1 for v in tf_answers.values() if any(v.values()))
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO ket_qua
+                (ten_hoc_sinh, lop, bai_start, bai_end,
+                 tong_so_cau_hoi, diem, subject, exam_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """, (ten_hoc_sinh, lop, bai_start, bai_end,
+              answered_count, total_score, subject, None))
+        conn.commit()
+        cur.close()
+        cursor.close()
+
+        return jsonify({
+            'message': 'Success',
+            'total_score': total_score,
+            'max_score': max_score,
+            'details': {
+                'tf': {
+                    'score': total_score,
+                    'detail': tf_details
+                }
+            }
+        }), 200
+
+    except Exception as e:
+        print(f"❌ Lỗi submit-tf-practice: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
 @app.route('/debug-correct', methods=['GET'])
 def debug_correct():
     conn = get_db_connection()
@@ -368,12 +484,11 @@ def get_history():
         """, (student_name, lop))
         results = cursor.fetchall()
         cursor.close()
-        
-        # Chuyển đổi datetime thành string
+
         for result in results:
             if result.get('created_at'):
                 result['created_at'] = result['created_at'].isoformat()
-        
+
         return jsonify(results), 200
     except psycopg2.Error as err:
         return jsonify({"error": str(err)}), 500
@@ -391,8 +506,8 @@ def get_statistics():
 
     try:
         conn = get_db_connection()
-        cursor = conn.cursor(cursor_factory=extras.RealDictCursor) 
-        
+        cursor = conn.cursor(cursor_factory=extras.RealDictCursor)
+
         cursor.execute("""
             SELECT lop, bai_start, COUNT(*) as so_hoc_sinh
             FROM ket_qua
@@ -410,8 +525,7 @@ def get_statistics():
         student_scores = cursor.fetchall()
 
         cursor.close()
-        
-        # Tính thêm thống kê tổng hợp
+
         scores = [s['diem'] for s in student_scores]
         stats = {
             "students_per_class_and_bai": students_per_class_and_bai,
@@ -421,7 +535,7 @@ def get_statistics():
             "highest_score": max(scores) if scores else 0,
             "lowest_score": min(scores) if scores else 0
         }
-        
+
         return jsonify(stats), 200
     except psycopg2.Error as err:
         return jsonify({"error": str(err)}), 500
@@ -429,7 +543,7 @@ def get_statistics():
         if conn:
             conn.close()
 
-# ========== API LẤY DANH SÁCH LỚP (dùng cho dropdown) ==========
+# ========== API LẤY DANH SÁCH LỚP ==========
 @app.route('/api/lop', methods=['GET'])
 def get_lop():
     conn = None
@@ -495,7 +609,6 @@ def get_all_students():
         conn = get_db_connection()
         cur = conn.cursor()
 
-        # Lấy danh sách học sinh duy nhất đã có kết quả
         cur.execute("""
             SELECT DISTINCT ten_hoc_sinh, lop
             FROM ket_qua
@@ -505,7 +618,6 @@ def get_all_students():
 
         result = []
         for ten, lop in students:
-            # Lấy tất cả điểm và thời gian
             cur.execute("""
                 SELECT diem, created_at
                 FROM ket_qua
